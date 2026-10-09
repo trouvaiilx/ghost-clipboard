@@ -1,0 +1,50 @@
+[package]
+name = "ghost-clipboard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "A lightweight, keyboard-first clipboard history manager for Windows"
+license = "MIT"
+publish = false
+
+[lib]
+name = "ghost_clipboard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ghostclipboard"
+path = "src/main.rs"
+
+[dependencies]
+# GUI. `tiny-skia` (CPU renderer) is deliberately chosen over `wgpu`: this is a
+# small background utility, and avoiding a GPU context keeps idle memory low.
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "tokio", "crisp"] }
+tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
+
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
+
+# Windows-only integration. The `domain`/`storage` layers do not depend on these.
+# `tray-icon` default features only pull in Linux backends, so they are disabled.
+# The global shortcut uses native `RegisterHotKey` on the shell thread rather than
+# the `global-hotkey` crate: see docs/ARCHITECTURE.md for the reasoning.
+[target.'cfg(windows)'.dependencies]
+tray-icon = { version = "0.26", default-features = false }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
