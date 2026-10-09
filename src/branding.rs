@@ -94,4 +94,3 @@ mod tests {
         assert_eq!(px(0, 0)[3], 0, "corner should be transparent");
     }
 }
-

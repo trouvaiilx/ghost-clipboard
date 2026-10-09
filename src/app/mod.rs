@@ -1,40 +1,51 @@
-//! Iced application: state, messages and the glue to the native shell.
-//!
-//! Phase 1 only wires the shell events into a minimal window to prove the
-//! integration; the real history interface replaces `view` in a later phase.
+//! Iced application: state, messages, and native shell / service integration.
 
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use iced::futures::stream::{self, BoxStream, StreamExt};
 use iced::widget::{column, container, text};
 use iced::window;
 use iced::{Element, Length, Size, Subscription, Task, Theme};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex as TokioMutex, mpsc};
 
 use crate::branding;
+use crate::domain::settings::CaptureSettings;
 use crate::platform::windows::Shell;
 use crate::platform::{Component, ShellEvent, TrayCommand};
+use crate::services::CaptureService;
+use crate::storage::repository::{OpenReport, RecordOutcome};
+use crate::storage::{Storage, StorageHandle};
 
 /// Command-line derived start-up options.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Start in the tray without showing the history window.
     pub background: bool,
+    /// Custom database path (or None for default %APPDATA%/GhostClipboard/history.db).
+    pub db_path: Option<PathBuf>,
 }
 
 /// Run the application until the user chooses *Exit*.
-pub fn run(shell: Shell, options: Options) -> iced::Result {
-    let boot = Mutex::new(Some((shell, options)));
+pub fn run(shell: Shell, storage: Storage, options: Options) -> iced::Result {
+    let db_path_display = options
+        .db_path
+        .clone()
+        .or_else(|| crate::storage::worker::default_db_path().ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "in-memory / unavailable".to_string());
+
+    let boot = Mutex::new(Some((shell, storage, options, db_path_display)));
 
     iced::daemon(
         move || {
-            let (shell, options) = boot
+            let (shell, storage, options, db_path) = boot
                 .lock()
                 .expect("boot lock poisoned")
                 .take()
                 .expect("boot is only invoked once");
-            State::new(shell, options)
+            State::new(shell, storage, options, db_path)
         },
         State::update,
         State::view,
@@ -47,11 +58,17 @@ pub fn run(shell: Shell, options: Options) -> iced::Result {
 
 struct State {
     shell: Shell,
+    _storage: StorageHandle,
+    capture: Arc<TokioMutex<CaptureService>>,
     events: EventSource,
     window: Option<window::Id>,
     visible: bool,
-    clipboard_changes: u64,
+    clipboard_notifications: u64,
+    entries_recorded: usize,
+    pinned_count: usize,
     hotkey_presses: u64,
+    is_paused: bool,
+    db_path: String,
     faults: Vec<(Component, String)>,
 }
 
@@ -60,10 +77,18 @@ enum Message {
     Shell(ShellEvent),
     WindowOpened,
     CloseRequested(window::Id),
+    StatsLoaded(Result<OpenReport, String>),
+    ClipboardCaptured(Result<Option<RecordOutcome>, String>),
+    PauseToggled(bool),
 }
 
 impl State {
-    fn new(mut shell: Shell, options: Options) -> (Self, Task<Message>) {
+    fn new(
+        mut shell: Shell,
+        storage: Storage,
+        options: Options,
+        db_path: String,
+    ) -> (Self, Task<Message>) {
         let events = EventSource(Arc::new(Mutex::new(shell.take_events())));
         let faults: Vec<(Component, String)> = shell
             .report()
@@ -75,21 +100,41 @@ impl State {
             tracing::warn!(?component, %message, "native component unavailable");
         }
         tracing::info!("native shell started");
+
+        let storage_handle = storage.handle();
+        let capture_service =
+            CaptureService::new(storage_handle.clone(), CaptureSettings::default());
+        let capture = Arc::new(TokioMutex::new(capture_service));
+
         let mut state = Self {
             shell,
+            _storage: storage_handle.clone(),
+            capture,
             events,
             window: None,
             visible: false,
-            clipboard_changes: 0,
+            clipboard_notifications: 0,
+            entries_recorded: 0,
+            pinned_count: 0,
             hotkey_presses: 0,
+            is_paused: false,
+            db_path,
             faults,
         };
-        let task = if options.background {
+
+        let initial_show = if options.background {
             Task::none()
         } else {
             state.show()
         };
-        (state, task)
+
+        // Load initial database stats
+        let load_stats = Task::perform(
+            async move { storage_handle.report().await.map_err(|e| e.to_string()) },
+            Message::StatsLoaded,
+        );
+
+        (state, Task::batch([initial_show, load_stats]))
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -104,12 +149,41 @@ impl State {
             Message::Shell(event) => self.on_shell_event(event),
             Message::WindowOpened => Task::none(),
             Message::CloseRequested(id) => {
-                // Closing hides to the tray; the daemon keeps running.
                 if self.window == Some(id) {
                     self.hide()
                 } else {
                     Task::none()
                 }
+            }
+            Message::StatsLoaded(Ok(report)) => {
+                self.entries_recorded = report.total_entries;
+                self.pinned_count = report.pinned_entries;
+                Task::none()
+            }
+            Message::StatsLoaded(Err(err)) => {
+                tracing::error!(%err, "failed to load storage report");
+                Task::none()
+            }
+            Message::ClipboardCaptured(Ok(Some(outcome))) => {
+                match outcome {
+                    RecordOutcome::Inserted(_) => {
+                        self.entries_recorded += 1;
+                        tracing::debug!("new clipboard entry captured and persisted");
+                    }
+                    RecordOutcome::Deduplicated { moved_to_top, .. } => {
+                        tracing::debug!(moved_to_top, "clipboard entry deduplicated");
+                    }
+                }
+                Task::none()
+            }
+            Message::ClipboardCaptured(Ok(None)) => Task::none(),
+            Message::ClipboardCaptured(Err(err)) => {
+                tracing::error!(%err, "error during clipboard capture processing");
+                Task::none()
+            }
+            Message::PauseToggled(paused) => {
+                self.is_paused = paused;
+                Task::none()
             }
         }
     }
@@ -118,20 +192,40 @@ impl State {
         tracing::debug!(?event, "shell event");
         match event {
             ShellEvent::ClipboardChanged => {
-                self.clipboard_changes += 1;
-                Task::none()
+                self.clipboard_notifications += 1;
+                let capture = self.capture.clone();
+                Task::perform(
+                    async move {
+                        let mut guard = capture.lock().await;
+                        guard
+                            .on_clipboard_changed()
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::ClipboardCaptured,
+                )
             }
             ShellEvent::HotkeyPressed => {
                 self.hotkey_presses += 1;
                 self.toggle()
             }
             ShellEvent::TrayActivated | ShellEvent::Menu(TrayCommand::OpenHistory) => self.show(),
+            ShellEvent::Menu(TrayCommand::TogglePause) => {
+                let capture = self.capture.clone();
+                Task::perform(
+                    async move {
+                        let mut guard = capture.lock().await;
+                        guard.toggle_paused()
+                    },
+                    Message::PauseToggled,
+                )
+            }
             ShellEvent::Menu(TrayCommand::Exit) => {
                 self.shell.shutdown();
                 iced::exit()
             }
-            ShellEvent::Menu(TrayCommand::TogglePause | TrayCommand::OpenSettings) => {
-                // Wired up in later phases.
+            ShellEvent::Menu(TrayCommand::OpenSettings) => {
+                // Wired in Phase 5
                 Task::none()
             }
             ShellEvent::Overflow(dropped) => {
@@ -173,12 +267,24 @@ impl State {
     }
 
     fn view(&self, _window: window::Id) -> Element<'_, Message> {
+        let status_text = if self.is_paused {
+            "Status: PAUSED (capturing suspended)"
+        } else {
+            "Status: ACTIVE (recording clipboard)"
+        };
+
         let mut content = column![
             text("GhostClipboard").size(20),
-            text("Native integration check (Phase 1)").size(13),
+            text("Native Windows Clipboard History (Phase 2)").size(13),
+            text(status_text).size(14),
+            text(format!("Storage Location: {}", self.db_path)).size(12),
             text(format!(
                 "Clipboard change notifications: {}",
-                self.clipboard_changes
+                self.clipboard_notifications
+            )),
+            text(format!(
+                "Entries in database: {} ({} pinned)",
+                self.entries_recorded, self.pinned_count
             )),
             text(format!("Shortcut activations: {}", self.hotkey_presses)),
         ]
@@ -201,7 +307,6 @@ fn window_settings() -> window::Settings {
     window::Settings {
         size: Size::new(640.0, 520.0),
         min_size: Some(Size::new(420.0, 320.0)),
-        // The daemon must outlive its window: close requests hide to the tray.
         exit_on_close_request: false,
         icon: window::icon::from_rgba(mark.rgba, mark.size, mark.size).ok(),
         ..window::Settings::default()
@@ -214,8 +319,6 @@ struct EventSource(Arc<Mutex<Option<mpsc::Receiver<ShellEvent>>>>);
 
 impl Hash for EventSource {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // There is only ever one event source; a constant identity keeps the
-        // subscription alive across state updates.
         "ghostclipboard-shell-events".hash(state);
     }
 }

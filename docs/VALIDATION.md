@@ -28,10 +28,16 @@ phase. "Verified" means observed running on Windows, not merely compiled.
 | Tray left-click and menu selection | Attempted by posting tray-icon's internal callback message | **Not verified**: the library drops clicks when the icon has no shell rect, as is the case in this sandbox |
 | Global shortcut pressed on a real keyboard | Attempted with `keybd_event` | **Not verified** (synthetic input is not processed in this session). Needs manual check: run the app, press `Ctrl+Shift+Space`. |
 
-### Manual checks to run on an interactive desktop
-
-1. `cargo run`; confirm the ghost icon appears in the notification area (it may be under the chevron).
-2. Press `Ctrl+Shift+Space` from another application; the window should toggle.
-3. Left-click the tray icon (open) and right-click it (menu: Open history, Pause capture, Settings, Exit).
-4. Choose **Exit** from the tray menu. Note: Phase 1 only wires *Open history* and *Exit*.
+## Phase 2
+| Item | How | Result |
+| --- | --- | --- |
+| SQLite repository CRUD & migrations | Integration tests in `tests/persistence_test.rs` | Pass: v1 schema created, tables & indexes migrated |
+| Durable storage across application restarts | Reopening SQLite database file on disk across separate instances | Pass: pinned status, timestamps, and full contents survive restart |
+| Verbatim text preservation | Verifying byte-exact retrieval of multiline, CRLF, leading/trailing whitespace, UTF-8/emojis, code | Pass: stored text is identical to copied text |
+| Deduplication rules (`Anywhere` vs `LatestOnly`) | Tests with repeated text copies | Pass: `Anywhere` moves matching entry to top without deleting pinned state; `LatestOnly` adds duplicate only if intervening copy occurred |
+| Retention policies (max count and age cutoff) | Tests applying retention with pinned and unpinned entries | Pass: unpinned entries cleaned up according to limits; pinned entries are never deleted |
+| Non-blocking storage worker | `Storage` background thread with bounded queue | Pass: CRUD executed via async channel without blocking callers |
+| Windows clipboard read/write roundtrip | `tests/clipboard_test.rs` reading and writing `CF_UNICODETEXT` with sequence number check | Pass |
+| End-to-end event-driven capture in running app | Running background application process and invoking `Set-Clipboard` | Pass: `WM_CLIPBOARDUPDATE` received, sequence checked, entry persisted to `%APPDATA%/GhostClipboard/history.db` |
+| No sensitive clipboard content in logs | Diagnostic audit of debug and trace logging | Pass: only sequence numbers, lengths, event types, and outcomes are logged |
 

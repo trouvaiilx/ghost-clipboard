@@ -21,7 +21,7 @@ Versions were checked against crates.io and the crate sources at the start of Ph
 | Tray | `tray-icon` 0.26.1 (MSRV 1.90) | Needs a Win32 message loop on the creating thread. |
 | Global shortcut | Native `RegisterHotKey` via `windows` 0.62 | See decision 3. |
 | Clipboard notifications | `AddClipboardFormatListener` / `WM_CLIPBOARDUPDATE` via `windows` 0.62 | Event driven, no polling. |
-| Persistence (planned) | `rusqlite` | Phase 2. |
+| Persistence | `rusqlite` 0.40.2 (bundled, functions) | SQLite with WAL mode, normal synchronous, auto-vacuum, migrations |
 | Diagnostics | `tracing` | Never logs clipboard content. |
 
 The crate's `rust-version` is 1.90 (driven by `tray-icon`); the toolchain used is 1.98.1.
