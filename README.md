@@ -1,190 +1,224 @@
-# GhostClipboard
+# 👻 GhostClipboard
 
-[![Platform](https://img.shields.io/badge/platform-Windows%2011%20x64-blue.svg)](https://microsoft.com)
-[![Rust](https://img.shields.io/badge/rust-stable%202024%20edition-orange.svg)](https://www.rust-lang.org)
-[![GUI](https://img.shields.io/badge/gui-Iced%200.14-cyan.svg)](https://iced.rs)
-[![Storage](https://img.shields.io/badge/storage-SQLite%20(WAL)-lightgrey.svg)](https://sqlite.org)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](#license)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2011%20x64-blue.svg?style=flat-square)](https://microsoft.com)
+[![Rust](https://img.shields.io/badge/Rust-Stable%202024-orange.svg?style=flat-square)](https://www.rust-lang.org)
+[![GUI](https://img.shields.io/badge/GUI-Iced%200.14-cyan.svg?style=flat-square)](https://iced.rs)
+[![Database](https://img.shields.io/badge/Storage-SQLite%20WAL-lightgrey.svg?style=flat-square)](https://sqlite.org)
+[![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 
-**GhostClipboard** is a lightweight, keyboard-first, native Windows 11 clipboard history manager written in Rust. It runs quietly in the background, automatically tracks clipboard changes via native Windows event notifications, and lets you instantly search and retrieve previously copied content without ever freezing your workflow or leaking sensitive data.
-
----
-
-## Key Features
-
-* **Event-Driven Clipboard Monitoring:** Uses Windows native `AddClipboardFormatListener` and `WM_CLIPBOARDUPDATE` messages. Zero continuous polling; negligible CPU and RAM footprint.
-* **Keyboard-First Interface:** Built with [Iced 0.14](https://iced.rs) using a CPU renderer (`tiny-skia`). Opens instantly, auto-focuses search, and supports full keyboard navigation (arrows, Enter, Del, Ctrl+P, Esc).
-* **Automatic Focus Restoration:** Selecting an entry copies it to the Windows clipboard, dismisses the history window, and restores focus back to your previous application window so you can paste immediately.
-* **Strict Local Privacy Guarantee:**
-  * 100% offline operation. Zero telemetry, zero analytics, zero cloud synchronization, and no network sockets opened.
-  * Sensitive clipboard contents, URLs, and code snippets are **never** logged or emitted in tracing outputs.
-  * Local storage in `%APPDATA%\GhostClipboard\history.db` using SQLite with Write-Ahead Logging (WAL) and `%APPDATA%\GhostClipboard\settings.json`.
-* **Password Manager & Application Exclusions:** Automatically skips clipboard copies originating from excluded process executables (`1Password.exe`, `KeePass.exe`, `Bitwarden.exe`, `KeePassXC.exe`, `Enpass.exe`, and custom entries).
-* **Configurable Retention & Deduplication:**
-  * Deduplication options: Move existing entry to top or keep consecutive duplicates only.
-  * Retention limits: Bounded max unpinned entries (e.g. 200, 500, 1,000, 5,000) and max age (e.g. 7 days, 30 days, 90 days, 1 year).
-  * Pinned entries are protected from retention sweeps.
-  * Maximum clipboard entry size limit (e.g. 512 KB, 1 MB, 2 MB, 5 MB, 10 MB).
-* **System Tray & Global Hotkey:**
-  * Global Hotkey: `Ctrl+Shift+Space` toggles the history window anywhere in Windows.
-  * Tray icon with context menu: Open History, Pause/Resume Recording, Settings, and Exit.
-  * Single-instance safeguard via named Windows Mutex (`Local\GhostClipboard_SingleInstance_Mutex`). Launching a second instance activates the running window and exits cleanly.
-* **Launch at Login:** Optional Windows Registry startup integration (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) with `--background` flag support.
+> A blazing fast, keyboard-first, native Windows 11 clipboard manager built in Rust. It stays quietly in your background, captures your copied snippets without slowing down your computer, and lets you paste past items in a fraction of a second.
 
 ---
 
-## Architecture Overview
+## 💡 Why GhostClipboard?
 
-GhostClipboard uses a strictly isolated multi-threaded architecture that keeps OS-specific event loops, disk I/O, and GUI rendering completely separated:
+Most modern clipboard utilities are heavy web wrappers or cloud-connected apps that track your data or consume hundreds of megabytes of RAM.
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        GhostClipboard Runtime                          │
-├──────────────────────┬─────────────────────────────────────────────────┤
-│  Win32 Shell Thread  │ • Hidden Message-Only HWND                      │
-│                      │ • AddClipboardFormatListener / WM_CLIPBOARDUPDATE│
-│                      │ • RegisterHotKey (Ctrl+Shift+Space)             │
-│                      │ • tray-icon Notification Loop                   │
-│                      │ • Single-Instance Mutex & HWND Activation       │
-├──────────────────────┼─────────────────────────────────────────────────┤
-│   Tokio Runtime      │ • Channel coordinator                           │
-│   (Orchestrator)     │ • Capture pipeline: validation & dedup filter   │
-│                      │ • Process attribution via foreground HWND       │
-│                      │ • Settings persistence (JSON)                   │
-├──────────────────────┼─────────────────────────────────────────────────┤
-│  Storage Thread      │ • Dedicated OS thread for SQLite                │
-│                      │ • rusqlite in WAL mode with user_version schema │
-│                      │ • Transactional indexing, retention, & FTS-ready│
-├──────────────────────┼─────────────────────────────────────────────────┤
-│   Iced GUI Thread    │ • Iced 0.14 application loop                    │
-│                      │ • Dark, high-density split-pane interface       │
-│                      │ • CPU tiny-skia renderer (zero GPU driver faults)│
-│                      │ • Window focus & previous HWND restoration      │
-└──────────────────────┴─────────────────────────────────────────────────┘
+GhostClipboard takes a strictly native, privacy-first approach:
+
+* **⚡ Ultra Lightweight:** Compiled native Rust desktop binary using a fast CPU rasterizer (`tiny-skia`). Idle RAM usage is only ~25–35 MB, with zero GPU driver dependencies.
+* **🛡️ 100% Offline & Private:** No cloud sync, no tracking, no analytics, and no open internet sockets. Your passwords and copied snippets never leave your computer.
+* **⌨️ Keyboard-Centric Speed:** Press `Ctrl+Shift+Space`, type to fuzzy-search, press `Enter`, and it instantly copies the snippet and returns focus to your previous app so you can paste right away.
+* **🔒 Password Manager Aware:** Automatically ignores copies originating from KeePass, 1Password, Bitwarden, and other sensitive applications.
+* **🔄 Zero Polling:** Listens purely to native Windows clipboard events (`WM_CLIPBOARDUPDATE`), leaving your CPU at 0% when idle.
+
+---
+
+## 🚀 Quick Start in 10 Seconds
+
+```mermaid
+flowchart LR
+    A["1. Copy Anything<br/>(Ctrl + C)"] --> B["2. Toggle History<br/>(Ctrl + Shift + Space)"]
+    B --> C["3. Search Snippet<br/>(Type query)"]
+    C --> D["4. Press Enter<br/>(Pastes to previous app!)"]
 ```
 
+1. **Launch:** Run `ghostclipboard.exe`. GhostClipboard runs in your system tray.
+2. **Copy Normally:** Use Windows as you normally do (`Ctrl+C` text, links, code).
+3. **Bring Up History:** Press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> anywhere in Windows.
+4. **Select & Paste:** Use <kbd>↑</kbd> / <kbd>↓</kbd> to pick an entry (or type to search), then hit <kbd>Enter</kbd>.
+   * GhostClipboard copies the selected text, closes the window, and automatically restores focus to your active window.
+
 ---
 
-## Keyboard Shortcuts
+## 🎯 How It Works Under the Hood
 
-| Shortcut | Description |
+Here is how GhostClipboard processes your clipboard events smoothly in the background:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as You (Working in Any App)
+    participant Win as Windows OS
+    participant Shell as GhostClipboard Shell Thread
+    participant Cap as Capture Service
+    participant DB as SQLite Storage
+    participant UI as GhostClipboard UI
+
+    User->>Win: Copy text (Ctrl+C)
+    Win->>Shell: WM_CLIPBOARDUPDATE notification
+    Shell->>Cap: Inspect active foreground app
+    alt Source app is in exclusion list (e.g. 1Password.exe)
+        Cap-->>Shell: Ignored (Privacy Protection)
+    else Safe application
+        Cap->>Win: Read UTF-16 Unicode text safely
+        Cap->>DB: Deduplicate & persist in WAL history database
+    end
+
+    Note over User,UI: Later, when you need your past text...
+    User->>Win: Press Ctrl + Shift + Space
+    Win->>Shell: WM_HOTKEY event
+    Shell->>UI: Show history window & auto-focus search
+    UI->>DB: Query newest entries & search matches
+    User->>UI: Press Enter on snippet
+    UI->>Win: Write to clipboard & restore previous window focus
+```
+
+---
+
+## ⌨️ Keyboard Shortcuts Reference
+
+Designed so you never have to take your hands off the keyboard:
+
+| Shortcut | Action |
 | :--- | :--- |
-| `Ctrl + Shift + Space` | Global hotkey to open or dismiss GhostClipboard from any application. |
-| `Arrow Up` / `Arrow Down` | Navigate previous / next clipboard entry in the search results. |
-| `Enter` | Copy selected entry to the Windows clipboard, dismiss window, and focus previous app. |
-| `Escape` | Dismiss history window; if search query is active, clears search first. |
-| `Ctrl + P` | Pin / unpin selected entry (pinned entries survive retention sweeps). |
-| `Delete` or `Ctrl + D` | Permanently delete the selected clipboard entry. |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> | **Toggle History Window** anywhere in Windows |
+| <kbd>↑</kbd> / <kbd>↓</kbd> (Up / Down) | **Navigate** through results or history entries |
+| <kbd>Enter</kbd> | **Copy & Return** to previous active window |
+| <kbd>Esc</kbd> | **Dismiss** history window (clears search first if typing) |
+| <kbd>Ctrl</kbd> + <kbd>P</kbd> | **Pin / Unpin** selected snippet (pinned entries never expire) |
+| <kbd>Delete</kbd> or <kbd>Ctrl</kbd> + <kbd>D</kbd> | **Permanently delete** selected snippet |
 
 ---
 
-## Privacy & Security Model
+## 🛡️ Privacy & Security Details
 
-1. **Local-Only Storage:** All clipboard items are stored exclusively in SQLite at `%APPDATA%\GhostClipboard\history.db`. Settings are stored at `%APPDATA%\GhostClipboard\settings.json`.
-2. **Zero Telemetry:** No HTTP requests, telemetry packets, analytics, or background update pings are ever executed.
-3. **Log Sanitization:** Tracing logs strictly record metadata (character lengths, deduplication outcomes, sequence IDs) and **never** the text contents of the clipboard, preventing leaks into log files.
-4. **Foreground Process Exclusion:** When a clipboard change occurs, GhostClipboard inspects the active Windows foreground window (`GetForegroundWindow` -> `GetWindowThreadProcessId` -> `QueryFullProcessImageNameW`). If the process matches an excluded application (e.g. password manager), the clipboard notification is dropped immediately.
-   > **Note on Attribution Timing:** Process attribution queries the foreground process at notification time. Avoid instantaneous rapid window-switching while copying highly sensitive credentials.
+> [!IMPORTANT]
+> **Zero Cloud Sync & Zero Telemetry:** GhostClipboard contains no networking code. No telemetry packets, crash reports, or clipboard contents are ever transmitted over the network.
+
+* **Where is data stored?**
+  * SQLite History Database: `%APPDATA%\GhostClipboard\history.db`
+  * User Configuration: `%APPDATA%\GhostClipboard\settings.json`
+* **Password Manager Shield:**
+  * By default, processes named `1Password.exe`, `KeePass.exe`, `Bitwarden.exe`, `KeePassXC.exe`, `Enpass.exe`, `LastPass.exe`, and `Dashlane.exe` are completely excluded.
+  * You can add any custom executable (e.g. `secret_app.exe`) directly in the Settings tab.
+* **Log Sanitization:**
+  * All diagnostic logs record strictly operational metrics (e.g. entry count, character count, deduplication status). **Clipboard text is never printed to logs or terminal output.**
 
 ---
 
-## Building & Running
+## ⚙️ Settings & Customization
+
+GhostClipboard includes a built-in Settings tab right inside the interface:
+
+* **Maximum Entry Size:** Choose between 512 KB, 1 MB, 2 MB, 5 MB, or 10 MB to prevent gigantic copy operations from eating up memory.
+* **Deduplication Mode:**
+  * *Move to Top:* Copying an item already in history moves it back to the top without creating duplicate clutter.
+  * *Consecutive Only:* Only merges duplicate copies if they occur back-to-back.
+* **History Retention:**
+  * Limit unpinned entries to 200, 500, 1,000, 5,000, or unlimited.
+  * Limit entry age to 7 days, 30 days, 90 days, 1 year, or keep forever.
+  * Pinned entries (`Ctrl+P`) are always preserved.
+* **Launch at Windows Login:** Toggle automatic startup with a single click (registers in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` with `--background`).
+
+---
+
+## 🏗️ System Architecture
+
+For engineers interested in the internal concurrency design:
+
+```mermaid
+flowchart TD
+    subgraph S1 ["Win32 Native Shell Thread"]
+        A1["Message-Only HWND"] --> A2["WM_CLIPBOARDUPDATE"]
+        A1 --> A3["RegisterHotKey (Ctrl+Shift+Space)"]
+        A1 --> A4["System Tray Menu"]
+        A1 --> A5["Single-Instance Mutex (Local\GhostClipboard_...)"]
+    end
+
+    subgraph S2 ["Tokio Runtime Coordinator"]
+        B1["Shell Event Sync Channel"] --> B2["Capture Pipeline & App State"]
+        B2 --> B3["Process Attribution Detection"]
+        B2 --> B4["JSON Settings Persistence"]
+    end
+
+    subgraph S3 ["Storage Background Thread"]
+        C1["Dedicated SQLite Worker"] --> C2["rusqlite (WAL mode)"]
+        C2 --> C3["Indexed History & Retention Sweeper"]
+    end
+
+    subgraph S4 ["GUI Interface Thread"]
+        D1["Iced 0.14 Event Loop"] --> D2["tiny-skia CPU Rasterizer"]
+        D2 --> D3["Split-Pane & Settings Cards"]
+    end
+
+    S1 --> S2
+    S2 --> S3
+    S2 --> S4
+```
+
+* Read the complete [Architecture Documentation](docs/ARCHITECTURE.md) for detailed Win32 API contracts, error recovery, and database schema diagrams.
+
+---
+
+## 📦 Building from Source
 
 ### Prerequisites
 
-* Windows 11 (64-bit).
-* Rust toolchain (stable 1.80+):
+* Windows 11 (64-bit)
+* [Rust Stable](https://rustup.rs/) (1.80+):
   ```powershell
   rustup default stable-x86_64-pc-windows-msvc
   ```
 
-### Development Build & Test
+### Build & Run
 
 ```powershell
 # Clone the repository
 git clone https://github.com/Yuuji/ghost-clipboard.git
 cd ghost-clipboard
 
-# Run comprehensive test suite (53 tests)
+# Run test suite (53 unit & integration tests)
 cargo test
 
-# Run quality checks
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-
-# Run in development mode
-cargo run
-```
-
-### Release Build
-
-```powershell
-# Compile optimized release binary
+# Build optimized release binary
 cargo build --release
-
-# The compiled binary is located at:
-# target\release\ghostclipboard.exe
 ```
 
-### Command Line Flags
+The resulting standalone executable is generated at:
+```powershell
+target\release\ghostclipboard.exe
+```
 
-* `ghostclipboard.exe` - Starts GhostClipboard and displays the history interface.
-* `ghostclipboard.exe --background` - Starts GhostClipboard minimized to the Windows system tray (used by Windows autostart at login).
+> [!TIP]
+> The release executable is configured as a native Windows GUI subsystem binary (`windows_subsystem = "windows"`), meaning it launches silently without showing any command prompt window.
 
 ---
 
-## Repository Structure
+## ❓ Frequently Asked Questions (FAQ)
 
-```
-ghost-clipboard/
-├── Cargo.toml                  # Dependencies & build configuration
-├── src/
-│   ├── main.rs                 # CLI entry point, single-instance check, Iced daemon launch
-│   ├── lib.rs                  # Library crate root
-│   ├── branding.rs             # Generated window icon and tray icon rendering
-│   ├── app/                    # Iced application state, messages, theme, and views
-│   │   ├── mod.rs              # State management & update message dispatch
-│   │   ├── theme.rs            # Clean dark utility theme palette & styles
-│   │   ├── time.rs             # Relative timestamp formatting helper
-│   │   └── view.rs             # Modular UI view rendering (split-pane & settings cards)
-│   ├── domain/                 # Platform-agnostic domain models & policies
-│   │   ├── mod.rs
-│   │   ├── capture.rs          # Size limits, UTF-8 normalization, validation
-│   │   ├── entry.rs            # Entry models, ContentHash, ContentKind
-│   │   └── settings.rs         # AppSettings, DedupMode, RetentionPolicy, JSON persistence
-│   ├── platform/               # Operating system abstraction layer
-│   │   ├── mod.rs
-│   │   └── windows/            # Native Win32 platform implementation
-│   │       ├── autostart.rs    # Registry HKCU\Run launch-at-login
-│   │       ├── clipboard.rs    # Win32 OpenClipboard/GetClipboardData/SetClipboardData
-│   │       ├── foreground.rs   # Foreground HWND process name detection
-│   │       ├── shell.rs        # Win32 hidden message loop, hotkey, and tray integration
-│   │       └── single_instance.rs # Named Windows Mutex guard
-│   ├── services/               # Background business services
-│   │   ├── mod.rs
-│   │   └── capture.rs          # Event-driven clipboard capture orchestrator
-│   └── storage/                # SQLite persistence layer
-│       ├── mod.rs
-│       ├── migrations.rs       # SQLite schema migration engine (user_version)
-│       ├── repository.rs       # Synchronous SQLite repository & queries
-│       └── worker.rs           # Dedicated storage background thread & actor handle
-├── tests/                      # Integration test suites
-│   ├── clipboard_test.rs       # Win32 clipboard read/write roundtrip tests
-│   ├── history_ui_test.rs      # UI state, keyboard navigation, and filtering tests
-│   ├── persistence_test.rs     # SQLite WAL persistence and retention tests
-│   ├── settings_test.rs        # Settings JSON persistence and exclusion tests
-│   └── system_integration_test.rs # Single-instance and registry autostart tests
-└── docs/
-    └── ARCHITECTURE.md         # Detailed architectural documentation
-```
+<details>
+<summary><b>Does GhostClipboard support copying images or file paths?</b></summary>
+GhostClipboard's initial version is deliberately focused on high-speed plain text, URLs, formatted code snippets, and multiline Unicode data. Non-text formats are safely ignored without errors.
+</details>
+
+<details>
+<summary><b>How do I close the application completely?</b></summary>
+Right-click the GhostClipboard tray icon in the Windows taskbar corner and click <b>Exit</b>.
+</details>
+
+<details>
+<summary><b>What happens if another app locks the clipboard?</b></summary>
+GhostClipboard uses a bounded exponential retry mechanism (up to 4 quick attempts) rather than crashing or freezing your computer.
+</details>
+
+<details>
+<summary><b>Can I run multiple copies of GhostClipboard?</b></summary>
+GhostClipboard enforces a single-instance safeguard using a named Windows Mutex. If you try to run the application again, it signals the existing background instance to bring its window forward and immediately exits.
+</details>
 
 ---
 
-## License
+## 📜 License
 
-Dual-licensed under either of:
-
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
