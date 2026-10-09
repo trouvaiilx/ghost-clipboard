@@ -17,6 +17,18 @@ fn main() {
         )
         .init();
 
+    let _single_instance = match ghost_clipboard::platform::acquire_single_instance() {
+        Ok(Some(guard)) => Some(guard),
+        Ok(None) => {
+            tracing::info!("GhostClipboard is already running. Activated existing instance.");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not acquire single-instance mutex; proceeding anyway");
+            None
+        }
+    };
+
     let options = Options {
         background: std::env::args().any(|arg| arg == "--background"),
         db_path: None,

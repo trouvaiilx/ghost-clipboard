@@ -1,7 +1,8 @@
 //! Foreground window inspection.
 //!
 //! Retrieves the executable name of the currently active window
-//! to attribute clipboard entries to source applications.
+//! to attribute clipboard entries to source applications, and
+//! saves/restores active window focus across history display.
 
 use std::path::Path;
 use windows::Win32::Foundation::{CloseHandle, HWND};

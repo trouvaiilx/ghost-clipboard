@@ -521,8 +521,53 @@ fn render_settings_view<'a>(state: &'a State) -> Element<'a, Message> {
     ]
     .spacing(4);
 
-    let mut content =
-        column![title, storage_section, capture_section, shortcuts_section].spacing(16);
+    let autostart_label = if state.autostart_enabled {
+        "Status: ENABLED (starts automatically on Windows sign-in with --background)"
+    } else {
+        "Status: DISABLED (manual start only)"
+    };
+    let autostart_btn_text = if state.autostart_enabled {
+        "Disable Launch at Login"
+    } else {
+        "Enable Launch at Login"
+    };
+    let autostart_btn = button(text(autostart_btn_text).size(12))
+        .on_press(Message::ToggleAutostart)
+        .style(theme::subtle_button)
+        .padding([4, 10]);
+
+    let startup_section = column![
+        text("System Startup & Background Operation").size(14),
+        text("GhostClipboard runs silently in the system tray when the window is closed.")
+            .size(12)
+            .color(theme::TEXT_SECONDARY),
+        row![
+            text(autostart_label)
+                .size(12)
+                .color(if state.autostart_enabled {
+                    ACCENT_GREEN
+                } else {
+                    theme::TEXT_SECONDARY
+                }),
+            Space::new().width(Length::Fill),
+            autostart_btn,
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        text("Single-instance protection: Active (duplicate launches activate this window)")
+            .size(11)
+            .color(TEXT_MUTED),
+    ]
+    .spacing(6);
+
+    let mut content = column![
+        title,
+        storage_section,
+        capture_section,
+        startup_section,
+        shortcuts_section
+    ]
+    .spacing(16);
 
     if !state.faults.is_empty() {
         let mut fault_col =

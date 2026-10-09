@@ -52,6 +52,8 @@ use crate::platform::{Component, Hotkey, ShellEvent, ShellFault, TrayCommand};
 const EVENT_QUEUE: usize = 64;
 /// Posted to the shell window to request an orderly shutdown.
 const WM_SHUTDOWN: u32 = WM_APP + 1;
+/// Posted by a secondary instance attempting to launch to activate this existing instance.
+pub const WM_ACTIVATE_INSTANCE: u32 = WM_APP + 2;
 /// Identifier of the single global shortcut registered on the shell window.
 const HOTKEY_ID: i32 = 1;
 
@@ -134,6 +136,11 @@ impl Shell {
     /// Hand the event receiver to the consumer. Returns `None` after the first call.
     pub fn take_events(&mut self) -> Option<mpsc::Receiver<ShellEvent>> {
         self.events.take()
+    }
+
+    /// Native window handle for the shell message-only window.
+    pub fn hwnd(&self) -> isize {
+        self.hwnd
     }
 
     /// Stop the thread and release the listener, shortcut and tray icon.
@@ -303,6 +310,10 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_HOTKEY if wparam.0 == HOTKEY_ID as usize => {
+            notify(ShellEvent::HotkeyPressed);
+            LRESULT(0)
+        }
+        WM_ACTIVATE_INSTANCE => {
             notify(ShellEvent::HotkeyPressed);
             LRESULT(0)
         }

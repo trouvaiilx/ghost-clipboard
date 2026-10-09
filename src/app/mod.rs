@@ -105,6 +105,7 @@ pub struct State {
     pub pinned_count: usize,
     pub hotkey_presses: u64,
     pub is_paused: bool,
+    pub autostart_enabled: bool,
     pub db_path: String,
     pub faults: Vec<(Component, String)>,
 }
@@ -140,6 +141,7 @@ pub enum Message {
     HistoryCleared(Result<usize, String>),
     TogglePause,
     PauseToggled(bool),
+    ToggleAutostart,
     SwitchTab(ViewTab),
     KeyboardEvent(keyboard::Event),
     DismissFeedback,
@@ -193,6 +195,7 @@ impl State {
             pinned_count: 0,
             hotkey_presses: 0,
             is_paused: false,
+            autostart_enabled: platform::is_autostart_enabled().unwrap_or(false),
             db_path,
             faults,
         };
@@ -372,6 +375,25 @@ impl State {
                     "Clipboard capture resumed"
                 };
                 self.status_feedback = Some((msg.to_string(), false));
+                Task::none()
+            }
+            Message::ToggleAutostart => {
+                let new_val = !self.autostart_enabled;
+                match platform::set_autostart_enabled(new_val) {
+                    Ok(()) => {
+                        self.autostart_enabled = new_val;
+                        let msg = if new_val {
+                            "Launch-at-login enabled"
+                        } else {
+                            "Launch-at-login disabled"
+                        };
+                        self.status_feedback = Some((msg.to_string(), false));
+                    }
+                    Err(err) => {
+                        self.status_feedback =
+                            Some((format!("Failed to update autostart: {err}"), true));
+                    }
+                }
                 Task::none()
             }
             Message::SwitchTab(tab) => {

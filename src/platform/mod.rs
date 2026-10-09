@@ -141,6 +141,50 @@ pub fn write_clipboard_text(text: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(windows)]
+pub type SingleInstanceGuard = windows::SingleInstance;
+#[cfg(not(windows))]
+pub struct SingleInstanceGuard;
+
+/// Try to acquire the single-instance guard.
+/// Returns Ok(Some(guard)) if this process is the first instance.
+/// Returns Ok(None) if another instance is already running (it will be activated).
+pub fn acquire_single_instance() -> Result<Option<SingleInstanceGuard>, String> {
+    #[cfg(windows)]
+    {
+        windows::SingleInstance::acquire().map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Some(SingleInstanceGuard))
+    }
+}
+
+/// Check if launch-at-login is enabled in the operating system.
+pub fn is_autostart_enabled() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        windows::is_autostart_enabled()
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
+/// Enable or disable launch-at-login in the operating system.
+pub fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        windows::set_autostart_enabled(enabled)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
