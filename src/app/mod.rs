@@ -5,18 +5,25 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use iced::futures::stream::{self, BoxStream, StreamExt};
-use iced::widget::{column, container, text};
 use iced::window;
-use iced::{Element, Length, Size, Subscription, Task, Theme};
+use iced::{Element, Size, Subscription, Task, Theme, keyboard};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
 
+pub mod theme;
+pub mod time;
+pub mod view;
+
 use crate::branding;
+use crate::domain::entry::{EntryId, EntrySummary};
 use crate::domain::settings::CaptureSettings;
 use crate::platform::windows::Shell;
-use crate::platform::{Component, ShellEvent, TrayCommand};
+use crate::platform::{self, Component, ShellEvent, TrayCommand};
 use crate::services::CaptureService;
-use crate::storage::repository::{OpenReport, RecordOutcome};
+use crate::storage::repository::{HistoryQuery, OpenReport, RecordOutcome};
 use crate::storage::{Storage, StorageHandle};
+
+/// Widget ID for the search input so it can be focused programmatically.
+pub const SEARCH_INPUT_ID: &str = "ghostclipboard_search_input";
 
 /// Command-line derived start-up options.
 #[derive(Debug, Clone, Default)]
@@ -56,34 +63,90 @@ pub fn run(shell: Shell, storage: Storage, options: Options) -> iced::Result {
     .run()
 }
 
-struct State {
+/// Filter for entries displayed in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EntryFilter {
+    #[default]
+    All,
+    PinnedOnly,
+}
+
+/// Active top-level view tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewTab {
+    #[default]
+    History,
+    Settings,
+}
+
+pub struct State {
     shell: Shell,
-    _storage: StorageHandle,
+    storage: StorageHandle,
     capture: Arc<TokioMutex<CaptureService>>,
     events: EventSource,
     window: Option<window::Id>,
     visible: bool,
-    clipboard_notifications: u64,
-    entries_recorded: usize,
-    pinned_count: usize,
-    hotkey_presses: u64,
-    is_paused: bool,
-    db_path: String,
-    faults: Vec<(Component, String)>,
+    previous_window: Option<isize>,
+
+    // UI state
+    pub search_query: String,
+    pub entry_filter: EntryFilter,
+    pub active_tab: ViewTab,
+    pub entries: Vec<EntrySummary>,
+    pub selected_index: Option<usize>,
+    pub selected_full_text: Option<String>,
+    pub is_loading: bool,
+    pub confirm_clear: bool,
+    pub status_feedback: Option<(String, bool)>,
+
+    // Diagnostics & service state
+    pub clipboard_notifications: u64,
+    pub entries_recorded: usize,
+    pub pinned_count: usize,
+    pub hotkey_presses: u64,
+    pub is_paused: bool,
+    pub db_path: String,
+    pub faults: Vec<(Component, String)>,
 }
 
 #[derive(Debug, Clone)]
-enum Message {
+pub enum Message {
     Shell(ShellEvent),
     WindowOpened,
     CloseRequested(window::Id),
     StatsLoaded(Result<OpenReport, String>),
     ClipboardCaptured(Result<Option<RecordOutcome>, String>),
+
+    // UI interactions
+    SearchInputChanged(String),
+    ClearSearch,
+    EntriesLoaded(Result<Vec<EntrySummary>, String>),
+    SelectedTextLoaded {
+        id: EntryId,
+        text: Result<Option<String>, String>,
+    },
+    SelectEntry(usize),
+    FilterChanged(EntryFilter),
+    CopyEntry(EntryId),
+    EntryCopied(Result<(), String>),
+    TogglePin(EntryId),
+    PinToggled(Result<Option<bool>, String>),
+    DeleteEntry(EntryId),
+    EntryDeleted(Result<bool, String>),
+    RequestClearHistory,
+    CancelClearHistory,
+    ClearUnpinned,
+    ClearAll,
+    HistoryCleared(Result<usize, String>),
+    TogglePause,
     PauseToggled(bool),
+    SwitchTab(ViewTab),
+    KeyboardEvent(keyboard::Event),
+    DismissFeedback,
 }
 
 impl State {
-    fn new(
+    pub fn new(
         mut shell: Shell,
         storage: Storage,
         options: Options,
@@ -108,11 +171,23 @@ impl State {
 
         let mut state = Self {
             shell,
-            _storage: storage_handle.clone(),
+            storage: storage_handle.clone(),
             capture,
             events,
             window: None,
             visible: false,
+            previous_window: None,
+
+            search_query: String::new(),
+            entry_filter: EntryFilter::All,
+            active_tab: ViewTab::History,
+            entries: Vec::new(),
+            selected_index: None,
+            selected_full_text: None,
+            is_loading: true,
+            confirm_clear: false,
+            status_feedback: None,
+
             clipboard_notifications: 0,
             entries_recorded: 0,
             pinned_count: 0,
@@ -128,32 +203,180 @@ impl State {
             state.show()
         };
 
-        // Load initial database stats
+        let initial_load = state.reload_entries();
         let load_stats = Task::perform(
             async move { storage_handle.report().await.map_err(|e| e.to_string()) },
             Message::StatsLoaded,
         );
 
-        (state, Task::batch([initial_show, load_stats]))
+        (state, Task::batch([initial_show, initial_load, load_stats]))
     }
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             Subscription::run_with(self.events.clone(), EventSource::stream),
             window::close_requests().map(Message::CloseRequested),
+            keyboard::listen().map(Message::KeyboardEvent),
         ])
     }
 
-    fn update(&mut self, message: Message) -> Task<Message> {
+    pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Shell(event) => self.on_shell_event(event),
-            Message::WindowOpened => Task::none(),
+            Message::WindowOpened => {
+                iced::widget::operation::focus(iced::widget::Id::new(SEARCH_INPUT_ID))
+            }
             Message::CloseRequested(id) => {
                 if self.window == Some(id) {
                     self.hide()
                 } else {
                     Task::none()
                 }
+            }
+            Message::SearchInputChanged(query) => {
+                self.search_query = query;
+                self.reload_entries()
+            }
+            Message::ClearSearch => {
+                self.search_query.clear();
+                self.reload_entries()
+            }
+            Message::EntriesLoaded(Ok(entries)) => {
+                self.is_loading = false;
+                self.entries = entries;
+                if self.entries.is_empty() {
+                    self.selected_index = None;
+                    self.selected_full_text = None;
+                    Task::none()
+                } else {
+                    let idx = self.selected_index.unwrap_or(0).min(self.entries.len() - 1);
+                    self.select_index(idx)
+                }
+            }
+            Message::EntriesLoaded(Err(err)) => {
+                self.is_loading = false;
+                self.status_feedback = Some((format!("Failed to load entries: {err}"), true));
+                Task::none()
+            }
+            Message::SelectedTextLoaded { id, text } => {
+                if let Some(entry) = self.selected_entry()
+                    && entry.id == id
+                {
+                    match text {
+                        Ok(t) => self.selected_full_text = t,
+                        Err(e) => {
+                            tracing::error!(%e, "failed to load full text for entry");
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::SelectEntry(index) => self.select_index(index),
+            Message::FilterChanged(filter) => {
+                self.entry_filter = filter;
+                Task::none()
+            }
+            Message::CopyEntry(id) => self.perform_copy(id),
+            Message::EntryCopied(Ok(())) => {
+                self.status_feedback = Some(("Copied to clipboard".to_string(), false));
+                Task::none()
+            }
+            Message::EntryCopied(Err(err)) => {
+                self.status_feedback = Some((format!("Copy failed: {err}"), true));
+                Task::none()
+            }
+            Message::TogglePin(id) => {
+                let storage = self.storage.clone();
+                Task::perform(
+                    async move { storage.toggle_pin(id).await.map_err(|e| e.to_string()) },
+                    Message::PinToggled,
+                )
+            }
+            Message::PinToggled(Ok(new_pin)) => {
+                let msg = match new_pin {
+                    Some(true) => "Entry pinned",
+                    Some(false) => "Entry unpinned",
+                    None => "Entry not found",
+                };
+                self.status_feedback = Some((msg.to_string(), false));
+                self.refresh_stats_and_entries()
+            }
+            Message::PinToggled(Err(err)) => {
+                self.status_feedback = Some((format!("Pin toggle failed: {err}"), true));
+                Task::none()
+            }
+            Message::DeleteEntry(id) => {
+                let storage = self.storage.clone();
+                Task::perform(
+                    async move { storage.delete(id).await.map_err(|e| e.to_string()) },
+                    Message::EntryDeleted,
+                )
+            }
+            Message::EntryDeleted(Ok(deleted)) => {
+                if deleted {
+                    self.status_feedback = Some(("Entry deleted".to_string(), false));
+                }
+                self.refresh_stats_and_entries()
+            }
+            Message::EntryDeleted(Err(err)) => {
+                self.status_feedback = Some((format!("Delete failed: {err}"), true));
+                Task::none()
+            }
+            Message::RequestClearHistory => {
+                self.confirm_clear = true;
+                Task::none()
+            }
+            Message::CancelClearHistory => {
+                self.confirm_clear = false;
+                Task::none()
+            }
+            Message::ClearUnpinned => {
+                self.confirm_clear = false;
+                let storage = self.storage.clone();
+                Task::perform(
+                    async move { storage.clear_unpinned().await.map_err(|e| e.to_string()) },
+                    Message::HistoryCleared,
+                )
+            }
+            Message::ClearAll => {
+                self.confirm_clear = false;
+                let storage = self.storage.clone();
+                Task::perform(
+                    async move { storage.clear_all().await.map_err(|e| e.to_string()) },
+                    Message::HistoryCleared,
+                )
+            }
+            Message::HistoryCleared(Ok(count)) => {
+                self.status_feedback = Some((format!("Cleared {count} entries"), false));
+                self.refresh_stats_and_entries()
+            }
+            Message::HistoryCleared(Err(err)) => {
+                self.status_feedback = Some((format!("Clear history failed: {err}"), true));
+                Task::none()
+            }
+            Message::TogglePause => {
+                let capture = self.capture.clone();
+                Task::perform(
+                    async move {
+                        let mut guard = capture.lock().await;
+                        guard.toggle_paused()
+                    },
+                    Message::PauseToggled,
+                )
+            }
+            Message::PauseToggled(paused) => {
+                self.is_paused = paused;
+                let msg = if paused {
+                    "Clipboard capture paused"
+                } else {
+                    "Clipboard capture resumed"
+                };
+                self.status_feedback = Some((msg.to_string(), false));
+                Task::none()
+            }
+            Message::SwitchTab(tab) => {
+                self.active_tab = tab;
+                Task::none()
             }
             Message::StatsLoaded(Ok(report)) => {
                 self.entries_recorded = report.total_entries;
@@ -174,15 +397,20 @@ impl State {
                         tracing::debug!(moved_to_top, "clipboard entry deduplicated");
                     }
                 }
-                Task::none()
+                if self.visible {
+                    self.reload_entries()
+                } else {
+                    Task::none()
+                }
             }
             Message::ClipboardCaptured(Ok(None)) => Task::none(),
             Message::ClipboardCaptured(Err(err)) => {
                 tracing::error!(%err, "error during clipboard capture processing");
                 Task::none()
             }
-            Message::PauseToggled(paused) => {
-                self.is_paused = paused;
+            Message::KeyboardEvent(event) => self.handle_keyboard_event(event),
+            Message::DismissFeedback => {
+                self.status_feedback = None;
                 Task::none()
             }
         }
@@ -225,14 +453,168 @@ impl State {
                 iced::exit()
             }
             ShellEvent::Menu(TrayCommand::OpenSettings) => {
-                // Wired in Phase 5
-                Task::none()
+                self.active_tab = ViewTab::Settings;
+                self.show()
             }
             ShellEvent::Overflow(dropped) => {
                 tracing::warn!(dropped, "shell events were dropped");
                 Task::none()
             }
         }
+    }
+
+    fn handle_keyboard_event(&mut self, event: keyboard::Event) -> Task<Message> {
+        let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+            return Task::none();
+        };
+
+        if !self.visible {
+            return Task::none();
+        }
+
+        match key {
+            keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                if self.confirm_clear {
+                    self.confirm_clear = false;
+                    Task::none()
+                } else if !self.search_query.is_empty() {
+                    self.search_query.clear();
+                    self.reload_entries()
+                } else {
+                    self.hide()
+                }
+            }
+            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => self.navigate_selection(1),
+            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => self.navigate_selection(-1),
+            keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                if let Some(entry) = self.selected_entry() {
+                    return self.perform_copy(entry.id);
+                }
+                Task::none()
+            }
+            keyboard::Key::Named(keyboard::key::Named::Delete) => {
+                if let Some(entry) = self.selected_entry() {
+                    let id = entry.id;
+                    return self.update(Message::DeleteEntry(id));
+                }
+                Task::none()
+            }
+            keyboard::Key::Character(ref c)
+                if modifiers.control() && (c.eq_ignore_ascii_case("p")) =>
+            {
+                if let Some(entry) = self.selected_entry() {
+                    let id = entry.id;
+                    return self.update(Message::TogglePin(id));
+                }
+                Task::none()
+            }
+            keyboard::Key::Character(ref c)
+                if modifiers.control() && (c.eq_ignore_ascii_case("d")) =>
+            {
+                if let Some(entry) = self.selected_entry() {
+                    let id = entry.id;
+                    return self.update(Message::DeleteEntry(id));
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    pub fn selected_entry(&self) -> Option<&EntrySummary> {
+        self.selected_index.and_then(|idx| self.entries.get(idx))
+    }
+
+    pub fn navigate_selection(&mut self, delta: isize) -> Task<Message> {
+        let count = self.entries.len();
+        if count == 0 {
+            self.selected_index = None;
+            return Task::none();
+        }
+
+        let current = self.selected_index.unwrap_or(0) as isize;
+        let next = (current + delta).clamp(0, count as isize - 1) as usize;
+        self.select_index(next)
+    }
+
+    pub fn select_index(&mut self, index: usize) -> Task<Message> {
+        if index >= self.entries.len() {
+            self.selected_index = None;
+            self.selected_full_text = None;
+            return Task::none();
+        }
+
+        self.selected_index = Some(index);
+        let id = self.entries[index].id;
+        let storage = self.storage.clone();
+
+        Task::perform(
+            async move {
+                let text = storage.get_text(id).await.map_err(|e| e.to_string())?;
+                Ok(text)
+            },
+            move |text| Message::SelectedTextLoaded { id, text },
+        )
+    }
+
+    fn perform_copy(&mut self, id: EntryId) -> Task<Message> {
+        let storage = self.storage.clone();
+        let previous_window = self.previous_window.take();
+
+        let hide_task = self.hide();
+
+        let copy_task = Task::perform(
+            async move {
+                let text = storage
+                    .get_text(id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "Entry not found".to_string())?;
+
+                platform::write_clipboard_text(&text)?;
+
+                if let Some(handle) = previous_window {
+                    platform::restore_active_window(handle);
+                }
+
+                Ok(())
+            },
+            Message::EntryCopied,
+        );
+
+        Task::batch([hide_task, copy_task])
+    }
+
+    fn reload_entries(&mut self) -> Task<Message> {
+        self.is_loading = true;
+        let storage = self.storage.clone();
+        let query_term = if self.search_query.trim().is_empty() {
+            None
+        } else {
+            Some(self.search_query.trim().to_string())
+        };
+
+        Task::perform(
+            async move {
+                let query = HistoryQuery {
+                    search_term: query_term,
+                    limit: 100,
+                    offset: 0,
+                };
+                storage.list(query).await.map_err(|e| e.to_string())
+            },
+            Message::EntriesLoaded,
+        )
+    }
+
+    fn refresh_stats_and_entries(&mut self) -> Task<Message> {
+        let reload = self.reload_entries();
+        let storage = self.storage.clone();
+        let report = Task::perform(
+            async move { storage.report().await.map_err(|e| e.to_string()) },
+            Message::StatsLoaded,
+        );
+        Task::batch([reload, report])
     }
 
     fn toggle(&mut self) -> Task<Message> {
@@ -245,15 +627,22 @@ impl State {
 
     fn show(&mut self) -> Task<Message> {
         self.visible = true;
+        self.previous_window = platform::active_window_handle();
+
+        let reload = self.reload_entries();
+        let focus_input = iced::widget::operation::focus(iced::widget::Id::new(SEARCH_INPUT_ID));
+
         match self.window {
             Some(id) => Task::batch([
                 window::set_mode(id, window::Mode::Windowed),
                 window::gain_focus(id),
+                reload,
+                focus_input,
             ]),
             None => {
                 let (id, open) = window::open(window_settings());
                 self.window = Some(id);
-                open.map(|_| Message::WindowOpened)
+                Task::batch([open.map(|_| Message::WindowOpened), reload, focus_input])
             }
         }
     }
@@ -266,47 +655,16 @@ impl State {
         }
     }
 
-    fn view(&self, _window: window::Id) -> Element<'_, Message> {
-        let status_text = if self.is_paused {
-            "Status: PAUSED (capturing suspended)"
-        } else {
-            "Status: ACTIVE (recording clipboard)"
-        };
-
-        let mut content = column![
-            text("GhostClipboard").size(20),
-            text("Native Windows Clipboard History (Phase 2)").size(13),
-            text(status_text).size(14),
-            text(format!("Storage Location: {}", self.db_path)).size(12),
-            text(format!(
-                "Clipboard change notifications: {}",
-                self.clipboard_notifications
-            )),
-            text(format!(
-                "Entries in database: {} ({} pinned)",
-                self.entries_recorded, self.pinned_count
-            )),
-            text(format!("Shortcut activations: {}", self.hotkey_presses)),
-        ]
-        .spacing(8);
-
-        for (component, message) in &self.faults {
-            content = content.push(text(format!("{component:?} unavailable: {message}")));
-        }
-
-        container(content)
-            .padding(16)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+    pub fn view(&self, _window: window::Id) -> Element<'_, Message> {
+        view::view(self)
     }
 }
 
 fn window_settings() -> window::Settings {
     let mark = branding::render(64);
     window::Settings {
-        size: Size::new(640.0, 520.0),
-        min_size: Some(Size::new(420.0, 320.0)),
+        size: Size::new(760.0, 560.0),
+        min_size: Some(Size::new(540.0, 380.0)),
         exit_on_close_request: false,
         icon: window::icon::from_rgba(mark.rgba, mark.size, mark.size).ok(),
         ..window::Settings::default()

@@ -104,6 +104,43 @@ pub struct ShellFault {
     pub message: String,
 }
 
+/// Query the currently active foreground window before GhostClipboard takes focus.
+pub fn active_window_handle() -> Option<isize> {
+    #[cfg(windows)]
+    {
+        windows::foreground::active_window_handle()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Restore foreground focus to the previously active application window.
+pub fn restore_active_window(handle: isize) {
+    #[cfg(windows)]
+    {
+        windows::foreground::restore_active_window(handle);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = handle;
+    }
+}
+
+/// Write text back to the system clipboard.
+pub fn write_clipboard_text(text: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        windows::clipboard::write_text(text).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

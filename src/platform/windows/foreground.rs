@@ -8,8 +8,39 @@ use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+};
 use windows::core::PWSTR;
+
+/// Get the handle of the currently active foreground window as an isize integer.
+/// Returns None if the foreground window is invalid or belongs to our process.
+pub fn active_window_handle() -> Option<isize> {
+    unsafe {
+        let hwnd: HWND = GetForegroundWindow();
+        if hwnd.is_invalid() || hwnd.0.is_null() {
+            return None;
+        }
+
+        let mut pid: u32 = 0;
+        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || pid == std::process::id() {
+            return None;
+        }
+
+        Some(hwnd.0 as isize)
+    }
+}
+
+/// Restore focus to a previously active window.
+pub fn restore_active_window(handle: isize) {
+    if handle != 0 {
+        unsafe {
+            let hwnd = HWND(handle as *mut _);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
 
 /// Get the executable name (e.g. `code.exe`, `notepad.exe`) of the foreground window.
 /// Returns `None` if the foreground window cannot be queried or belongs to GhostClipboard.
