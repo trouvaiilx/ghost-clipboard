@@ -85,7 +85,7 @@ pub struct State {
     capture: Arc<TokioMutex<CaptureService>>,
     events: EventSource,
     window: Option<window::Id>,
-    visible: bool,
+    pub visible: bool,
     previous_window: Option<isize>,
 
     // UI state
@@ -575,52 +575,76 @@ impl State {
             return Task::none();
         }
 
-        match key {
-            keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                if self.confirm_clear {
-                    self.confirm_clear = false;
+        // Global tab shortcuts
+        if modifiers.control() {
+            match key {
+                keyboard::Key::Character(ref c) if c == "1" => {
+                    self.active_tab = ViewTab::History;
+                    return iced::widget::operation::focus(iced::widget::Id::new(SEARCH_INPUT_ID));
+                }
+                keyboard::Key::Character(ref c) if c == "2" => {
+                    self.active_tab = ViewTab::Settings;
+                    return Task::none();
+                }
+                _ => {}
+            }
+        }
+
+        match self.active_tab {
+            ViewTab::Settings => match key {
+                keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                    self.active_tab = ViewTab::History;
+                    iced::widget::operation::focus(iced::widget::Id::new(SEARCH_INPUT_ID))
+                }
+                _ => Task::none(),
+            },
+            ViewTab::History => match key {
+                keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                    if self.confirm_clear {
+                        self.confirm_clear = false;
+                        Task::none()
+                    } else if !self.search_query.is_empty() {
+                        self.search_query.clear();
+                        self.reload_entries()
+                    } else {
+                        self.hide()
+                    }
+                }
+                keyboard::Key::Named(keyboard::key::Named::ArrowDown) => self.navigate_selection(1),
+                keyboard::Key::Named(keyboard::key::Named::ArrowUp) => self.navigate_selection(-1),
+                keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                    if let Some(entry) = self.selected_entry() {
+                        return self.perform_copy(entry.id);
+                    }
                     Task::none()
-                } else if !self.search_query.is_empty() {
-                    self.search_query.clear();
-                    self.reload_entries()
-                } else {
-                    self.hide()
                 }
-            }
-            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => self.navigate_selection(1),
-            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => self.navigate_selection(-1),
-            keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                if let Some(entry) = self.selected_entry() {
-                    return self.perform_copy(entry.id);
+                keyboard::Key::Named(keyboard::key::Named::Delete) => {
+                    if let Some(entry) = self.selected_entry() {
+                        let id = entry.id;
+                        return self.update(Message::DeleteEntry(id));
+                    }
+                    Task::none()
                 }
-                Task::none()
-            }
-            keyboard::Key::Named(keyboard::key::Named::Delete) => {
-                if let Some(entry) = self.selected_entry() {
-                    let id = entry.id;
-                    return self.update(Message::DeleteEntry(id));
+                keyboard::Key::Character(ref c)
+                    if modifiers.control() && (c.eq_ignore_ascii_case("p")) =>
+                {
+                    if let Some(entry) = self.selected_entry() {
+                        let id = entry.id;
+                        return self.update(Message::TogglePin(id));
+                    }
+                    Task::none()
                 }
-                Task::none()
-            }
-            keyboard::Key::Character(ref c)
-                if modifiers.control() && (c.eq_ignore_ascii_case("p")) =>
-            {
-                if let Some(entry) = self.selected_entry() {
-                    let id = entry.id;
-                    return self.update(Message::TogglePin(id));
+                keyboard::Key::Character(ref c)
+                    if modifiers.control() && (c.eq_ignore_ascii_case("d")) =>
+                {
+                    if let Some(entry) = self.selected_entry() {
+                        let id = entry.id;
+                        return self.update(Message::DeleteEntry(id));
+                    }
+                    Task::none()
                 }
-                Task::none()
-            }
-            keyboard::Key::Character(ref c)
-                if modifiers.control() && (c.eq_ignore_ascii_case("d")) =>
-            {
-                if let Some(entry) = self.selected_entry() {
-                    let id = entry.id;
-                    return self.update(Message::DeleteEntry(id));
-                }
-                Task::none()
-            }
-            _ => Task::none(),
+                _ => Task::none(),
+            },
         }
     }
 

@@ -67,9 +67,9 @@ fn render_header<'a>(state: &'a State) -> Element<'a, Message> {
         .width(Length::Fill);
 
     let pause_label = if state.is_paused {
-        "⏸ Paused"
+        "[Paused]"
     } else {
-        "● Recording"
+        "[Active]"
     };
     let pause_color = if state.is_paused {
         ACCENT_AMBER
@@ -81,42 +81,48 @@ fn render_header<'a>(state: &'a State) -> Element<'a, Message> {
         .style(theme::subtle_button)
         .padding([4, 10]);
 
-    let tab_history_btn = button(text("History").size(12))
+    let tab_history_btn = button(text("History (Ctrl+1)").size(12))
         .on_press(Message::SwitchTab(ViewTab::History))
-        .style(theme::pill_button(state.active_tab == ViewTab::History))
+        .style(theme::segmented_button(
+            state.active_tab == ViewTab::History,
+        ))
         .padding([4, 10]);
 
-    let tab_settings_btn = button(text("Settings").size(12))
+    let tab_settings_btn = button(text("Settings (Ctrl+2)").size(12))
         .on_press(Message::SwitchTab(ViewTab::Settings))
-        .style(theme::pill_button(state.active_tab == ViewTab::Settings))
+        .style(theme::segmented_button(
+            state.active_tab == ViewTab::Settings,
+        ))
         .padding([4, 10]);
 
-    container(
-        column![
-            row![
-                brand,
-                Space::new().width(Length::Fill),
-                pause_btn,
-                tab_history_btn,
-                tab_settings_btn
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-            search_container,
-        ]
-        .spacing(8),
-    )
-    .padding(12)
-    .style(|_t| container::Style {
-        background: Some(iced::Background::Color(theme::BG_INPUT)),
-        border: iced::Border {
-            color: theme::BORDER_SUBTLE,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..container::Style::default()
-    })
-    .into()
+    let nav_row = row![
+        brand,
+        Space::new().width(Length::Fill),
+        pause_btn,
+        tab_history_btn,
+        tab_settings_btn
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+
+    let mut header_col = column![nav_row].spacing(8);
+
+    if state.active_tab == ViewTab::History {
+        header_col = header_col.push(search_container);
+    }
+
+    container(header_col)
+        .padding(12)
+        .style(|_t| container::Style {
+            background: Some(iced::Background::Color(theme::BG_INPUT)),
+            border: iced::Border {
+                color: theme::BORDER_SUBTLE,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// Main clipboard history split view.
@@ -158,12 +164,14 @@ fn render_filter_bar<'a>(state: &'a State) -> Element<'a, Message> {
 
     let all_btn = button(text(all_label).size(12))
         .on_press(Message::FilterChanged(EntryFilter::All))
-        .style(theme::pill_button(state.entry_filter == EntryFilter::All))
+        .style(theme::segmented_button(
+            state.entry_filter == EntryFilter::All,
+        ))
         .padding([3, 10]);
 
-    let pinned_btn = button(text("📌 Pinned").size(12))
+    let pinned_btn = button(text("Pinned").size(12))
         .on_press(Message::FilterChanged(EntryFilter::PinnedOnly))
-        .style(theme::pill_button(
+        .style(theme::segmented_button(
             state.entry_filter == EntryFilter::PinnedOnly,
         ))
         .padding([3, 10]);
@@ -367,13 +375,13 @@ fn render_detail_pane<'a>(state: &'a State) -> Element<'a, Message> {
     let entry_id = entry.id;
 
     let pin_label = if entry.pinned {
-        "📌 Unpin (Ctrl+P)"
+        "Unpin (Ctrl+P)"
     } else {
-        "📌 Pin (Ctrl+P)"
+        "Pin (Ctrl+P)"
     };
 
     let action_bar = row![
-        button(text("📋 Copy to Clipboard (Enter)").size(12))
+        button(text("Copy to Clipboard (Enter)").size(12))
             .on_press(Message::CopyEntry(entry_id))
             .style(theme::primary_button)
             .padding([4, 10]),
@@ -381,7 +389,7 @@ fn render_detail_pane<'a>(state: &'a State) -> Element<'a, Message> {
             .on_press(Message::TogglePin(entry_id))
             .style(theme::subtle_button)
             .padding([4, 10]),
-        button(text("🗑 Delete (Del)").size(12))
+        button(text("Delete (Del)").size(12))
             .on_press(Message::DeleteEntry(entry_id))
             .style(theme::danger_button)
             .padding([4, 8]),
@@ -510,11 +518,11 @@ fn render_settings_view<'a>(state: &'a State) -> Element<'a, Message> {
 
 fn render_privacy_card<'a>(state: &'a State) -> Element<'a, Message> {
     let header = row![
-        text("🛡️  Local Privacy Guarantee")
+        text("[Local Only] Privacy Guarantee")
             .size(14)
             .color(ACCENT_GREEN),
         Space::new().width(Length::Fill),
-        text("Offline Only").size(11).color(ACCENT_GREEN),
+        text("Offline Mode").size(11).color(ACCENT_GREEN),
     ]
     .align_y(iced::Alignment::Center);
 
@@ -657,7 +665,7 @@ fn render_rules_card<'a>(state: &'a State) -> Element<'a, Message> {
         byte_row = byte_row.push(
             button(text(label).size(11))
                 .on_press(Message::SetMaxEntryBytes(bytes))
-                .style(theme::pill_button(is_active))
+                .style(theme::segmented_button(is_active))
                 .padding([3, 8]),
         );
     }
@@ -670,11 +678,15 @@ fn render_rules_card<'a>(state: &'a State) -> Element<'a, Message> {
             .width(160),
         button(text("Move to top (entire history)").size(11))
             .on_press(Message::SetDedupMode(DedupMode::Anywhere))
-            .style(theme::pill_button(current_dedup == DedupMode::Anywhere))
+            .style(theme::segmented_button(
+                current_dedup == DedupMode::Anywhere,
+            ))
             .padding([3, 8]),
         button(text("Consecutive copies only").size(11))
             .on_press(Message::SetDedupMode(DedupMode::LatestOnly))
-            .style(theme::pill_button(current_dedup == DedupMode::LatestOnly))
+            .style(theme::segmented_button(
+                current_dedup == DedupMode::LatestOnly,
+            ))
             .padding([3, 8]),
     ]
     .spacing(6)
@@ -702,7 +714,7 @@ fn render_rules_card<'a>(state: &'a State) -> Element<'a, Message> {
         max_entries_row = max_entries_row.push(
             button(text(label).size(11))
                 .on_press(Message::SetRetentionMaxEntries(opt))
-                .style(theme::pill_button(is_active))
+                .style(theme::segmented_button(is_active))
                 .padding([3, 8]),
         );
     }
@@ -729,7 +741,7 @@ fn render_rules_card<'a>(state: &'a State) -> Element<'a, Message> {
         max_age_row = max_age_row.push(
             button(text(label).size(11))
                 .on_press(Message::SetRetentionMaxAgeDays(opt))
-                .style(theme::pill_button(is_active))
+                .style(theme::segmented_button(is_active))
                 .padding([3, 8]),
         );
     }

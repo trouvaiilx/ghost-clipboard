@@ -16,7 +16,7 @@ pub const BORDER_SELECTED: Color = Color::from_rgb(0.30, 0.50, 0.85); // #4d80d9
 
 pub const TEXT_PRIMARY: Color = Color::from_rgb(0.93, 0.94, 0.96); // #edeef5
 pub const TEXT_SECONDARY: Color = Color::from_rgb(0.65, 0.68, 0.74); // #a6adc0
-pub const TEXT_MUTED: Color = Color::from_rgb(0.45, 0.48, 0.54); // #737b8a
+pub const TEXT_MUTED: Color = Color::from_rgb(0.56, 0.59, 0.65); // #8e95a5 (WCAG AA 4.8:1)
 
 pub const ACCENT_BLUE: Color = Color::from_rgb(0.36, 0.60, 0.98); // #5c99fa
 pub const ACCENT_GREEN: Color = Color::from_rgb(0.30, 0.75, 0.50); // #4dc080
@@ -199,7 +199,32 @@ pub fn pill_button(is_active: bool) -> impl Fn(&Theme, button::Status) -> button
             border: Border {
                 color: border,
                 width: 1.0,
-                radius: 12.0.into(),
+                radius: 4.0.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+pub fn segmented_button(is_active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme: &Theme, status: button::Status| {
+        let (bg, border, fg) = if is_active {
+            (BG_SELECTED, BORDER_SELECTED, ACCENT_BLUE)
+        } else {
+            match status {
+                button::Status::Active => (BG_SURFACE, BORDER_SUBTLE, TEXT_MUTED),
+                button::Status::Hovered => (BG_SURFACE_HOVER, BORDER_FOCUSED, TEXT_PRIMARY),
+                button::Status::Pressed => (BG_SELECTED, BORDER_SUBTLE, TEXT_PRIMARY),
+                button::Status::Disabled => (BG_INPUT, Color::TRANSPARENT, TEXT_MUTED),
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: fg,
+            border: Border {
+                color: border,
+                width: 1.0,
+                radius: 3.0.into(),
             },
             ..button::Style::default()
         }

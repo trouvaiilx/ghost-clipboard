@@ -214,3 +214,88 @@ async fn test_history_ui_view_rendering() {
         let _confirm_element = state.view(win_id);
     }
 }
+
+#[tokio::test]
+async fn test_settings_keyboard_isolation_and_tab_switching() {
+    let storage = Storage::spawn_in_memory().expect("spawn in-memory storage");
+    let shell = create_test_shell();
+
+    let (mut state, _) = State::new(shell, storage, Options::default(), "in-memory".into());
+    // Simulate visible window
+    state.visible = true;
+    let entries = vec![
+        sample_summary(1, "First snippet", true, ContentKind::Text),
+        sample_summary(2, "Second snippet", false, ContentKind::Text),
+    ];
+    let _ = state.update(Message::EntriesLoaded(Ok(entries)));
+    state.selected_index = Some(0);
+
+    // Switch to Settings tab
+    let _ = state.update(Message::SwitchTab(ViewTab::Settings));
+    assert_eq!(state.active_tab, ViewTab::Settings);
+
+    // 1. ArrowDown should not navigate history on Settings tab
+    let down_event = keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+        modified_key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::ArrowDown),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::default(),
+        repeat: false,
+        text: None,
+    };
+    let _ = state.update(Message::KeyboardEvent(down_event));
+    assert_eq!(state.selected_index, Some(0));
+
+    // 2. Delete should not delete history entries on Settings tab
+    let del_event = keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(keyboard::key::Named::Delete),
+        modified_key: keyboard::Key::Named(keyboard::key::Named::Delete),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Delete),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::default(),
+        repeat: false,
+        text: None,
+    };
+    let _ = state.update(Message::KeyboardEvent(del_event));
+    assert_eq!(state.entries.len(), 2);
+
+    // 3. Escape on Settings tab should switch back to History tab
+    let escape_event = keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(keyboard::key::Named::Escape),
+        modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::default(),
+        repeat: false,
+        text: None,
+    };
+    let _ = state.update(Message::KeyboardEvent(escape_event));
+    assert_eq!(state.active_tab, ViewTab::History);
+
+    // 4. Ctrl+2 switches to Settings tab
+    let ctrl_2_event = keyboard::Event::KeyPressed {
+        key: keyboard::Key::Character("2".into()),
+        modified_key: keyboard::Key::Character("2".into()),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Digit2),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::CTRL,
+        repeat: false,
+        text: None,
+    };
+    let _ = state.update(Message::KeyboardEvent(ctrl_2_event));
+    assert_eq!(state.active_tab, ViewTab::Settings);
+
+    // 5. Ctrl+1 switches back to History tab
+    let ctrl_1_event = keyboard::Event::KeyPressed {
+        key: keyboard::Key::Character("1".into()),
+        modified_key: keyboard::Key::Character("1".into()),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Digit1),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::CTRL,
+        repeat: false,
+        text: None,
+    };
+    let _ = state.update(Message::KeyboardEvent(ctrl_1_event));
+    assert_eq!(state.active_tab, ViewTab::History);
+}
