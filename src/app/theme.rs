@@ -35,7 +35,7 @@ pub fn search_bar_container(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_INPUT)),
         border: Border {
-            color: BORDER_SUBTLE,
+            color: BORDER_FOCUSED,
             width: 1.0,
             radius: 4.0.into(),
         },
@@ -77,6 +77,39 @@ pub fn entry_item(is_selected: bool) -> impl Fn(&Theme) -> container::Style {
                 },
                 text_color: Some(TEXT_PRIMARY),
                 ..container::Style::default()
+            }
+        }
+    }
+}
+
+pub fn entry_item_button(is_selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme: &Theme, status: button::Status| {
+        if is_selected {
+            button::Style {
+                background: Some(Background::Color(BG_SELECTED)),
+                border: Border {
+                    color: BORDER_SELECTED,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                text_color: TEXT_PRIMARY,
+                ..button::Style::default()
+            }
+        } else {
+            let (bg, border) = match status {
+                button::Status::Hovered => (BG_SURFACE_HOVER, BORDER_FOCUSED),
+                button::Status::Pressed => (BG_SELECTED, BORDER_SELECTED),
+                _ => (BG_SURFACE, BORDER_SUBTLE),
+            };
+            button::Style {
+                background: Some(Background::Color(bg)),
+                border: Border {
+                    color: border,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                text_color: TEXT_PRIMARY,
+                ..button::Style::default()
             }
         }
     }

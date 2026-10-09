@@ -97,6 +97,12 @@ pub struct AppSettings {
     pub excluded_apps: Vec<String>,
     pub autostart: bool,
     pub hotkey: String,
+    #[serde(default = "default_true")]
+    pub close_on_blur: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -109,6 +115,7 @@ impl Default for AppSettings {
                 .collect(),
             autostart: false,
             hotkey: "Ctrl+Shift+Space".to_string(),
+            close_on_blur: true,
         }
     }
 }

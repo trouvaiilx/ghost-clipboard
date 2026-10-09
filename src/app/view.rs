@@ -7,12 +7,18 @@ use iced::{Element, Length};
 
 use crate::app::theme::{self, ACCENT_AMBER, ACCENT_BLUE, ACCENT_GREEN, ACCENT_RED, TEXT_MUTED};
 use crate::app::time;
-use crate::app::{EntryFilter, Message, SEARCH_INPUT_ID, State, ViewTab};
+use crate::app::{
+    EntryFilter, Message, HISTORY_SCROLL_ID, SEARCH_INPUT_ID, State, ViewTab,
+};
 use crate::domain::entry::{ContentKind, EntrySummary};
 use crate::domain::settings::DedupMode;
 
 /// Render the complete window interface.
 pub fn view<'a>(state: &'a State) -> Element<'a, Message> {
+    if state.confirm_clear {
+        return render_clear_confirmation();
+    }
+
     let header = render_header(state);
     let content = match state.active_tab {
         ViewTab::History => render_history_view(state),
@@ -127,10 +133,6 @@ fn render_header<'a>(state: &'a State) -> Element<'a, Message> {
 
 /// Main clipboard history split view.
 fn render_history_view<'a>(state: &'a State) -> Element<'a, Message> {
-    if state.confirm_clear {
-        return render_clear_confirmation();
-    }
-
     let filter_bar = render_filter_bar(state);
     let list_pane = render_entries_list(state);
     let detail_pane = render_detail_pane(state);
@@ -169,7 +171,8 @@ fn render_filter_bar<'a>(state: &'a State) -> Element<'a, Message> {
         ))
         .padding([3, 10]);
 
-    let pinned_btn = button(text("Pinned").size(12))
+    let pinned_label = format!("Pinned ({})", state.pinned_count);
+    let pinned_btn = button(text(pinned_label).size(12))
         .on_press(Message::FilterChanged(EntryFilter::PinnedOnly))
         .style(theme::segmented_button(
             state.entry_filter == EntryFilter::PinnedOnly,
@@ -259,7 +262,8 @@ fn render_entries_list<'a>(state: &'a State) -> Element<'a, Message> {
         let msg = if !state.search_query.is_empty() {
             format!("No entries matching \"{}\"", state.search_query)
         } else if state.entry_filter == EntryFilter::PinnedOnly {
-            "No pinned entries. Click 📌 on any entry to pin it.".to_string()
+            "No pinned entries. Press Ctrl+P or use the Pin button in the details panel to pin an entry."
+                .to_string()
         } else {
             "Clipboard history is empty.\nCopy any text (Ctrl+C) to automatically capture it here."
                 .to_string()
@@ -281,7 +285,29 @@ fn render_entries_list<'a>(state: &'a State) -> Element<'a, Message> {
         list_col = list_col.push(item_card);
     }
 
+    if state.entries.len() >= state.query_limit && state.entries_recorded > state.entries.len() {
+        let load_more_btn = button(
+            container(
+                text(format!(
+                    "Load more entries (showing {} of {})...",
+                    state.entries.len(),
+                    state.entries_recorded
+                ))
+                .size(11)
+                .color(theme::TEXT_SECONDARY),
+            )
+            .center_x(Length::Fill),
+        )
+        .on_press(Message::LoadMoreEntries)
+        .style(theme::subtle_button)
+        .width(Length::Fill)
+        .padding(6);
+
+        list_col = list_col.push(load_more_btn);
+    }
+
     scrollable(list_col)
+        .id(iced::widget::Id::new(HISTORY_SCROLL_ID))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -297,7 +323,7 @@ fn render_entry_card<'a>(
 
     if entry.pinned {
         tags_row = tags_row.push(
-            container(text("PIN").size(9).color(theme::BG_ROOT))
+            container(text("PIN").size(10).color(theme::BG_ROOT))
                 .style(theme::badge(ACCENT_AMBER, theme::BG_ROOT))
                 .padding([1, 4]),
         );
@@ -305,7 +331,7 @@ fn render_entry_card<'a>(
 
     if entry.kind == ContentKind::Url {
         tags_row = tags_row.push(
-            container(text("URL").size(9).color(theme::BG_ROOT))
+            container(text("URL").size(10).color(theme::BG_ROOT))
                 .style(theme::badge(ACCENT_BLUE, theme::BG_ROOT))
                 .padding([1, 4]),
         );
@@ -313,7 +339,7 @@ fn render_entry_card<'a>(
 
     if let Some(ref app) = entry.source_app {
         tags_row = tags_row.push(
-            container(text(app.as_str()).size(10).color(theme::TEXT_SECONDARY))
+            container(text(app.as_str()).size(11).color(theme::TEXT_SECONDARY))
                 .style(theme::badge(theme::BG_INPUT, theme::TEXT_SECONDARY))
                 .padding([1, 4]),
         );
@@ -321,7 +347,7 @@ fn render_entry_card<'a>(
 
     let rel_time = time::format_entry_time(entry.copied_at);
     tags_row = tags_row.push(Space::new().width(Length::Fill));
-    tags_row = tags_row.push(text(rel_time).size(10).color(TEXT_MUTED));
+    tags_row = tags_row.push(text(rel_time).size(11).color(TEXT_MUTED));
 
     // Preview snippet: flatten newlines for a compact card display
     let snippet: String = entry
@@ -336,18 +362,18 @@ fn render_entry_card<'a>(
     let card_content = column![
         tags_row,
         preview_text,
-        text(char_count).size(10).color(TEXT_MUTED),
+        text(char_count).size(11).color(TEXT_MUTED),
     ]
     .spacing(4);
 
     let entry_id = entry.id;
-    let card_container = container(card_content)
-        .style(theme::entry_item(is_selected))
+    let card_btn = button(card_content)
+        .style(theme::entry_item_button(is_selected))
         .padding(8)
-        .width(Length::Fill);
+        .width(Length::Fill)
+        .on_press(Message::SelectEntry(index));
 
-    mouse_area(card_container)
-        .on_press(Message::SelectEntry(index))
+    mouse_area(card_btn)
         .on_right_press(Message::CopyEntry(entry_id))
         .into()
 }
@@ -380,8 +406,8 @@ fn render_detail_pane<'a>(state: &'a State) -> Element<'a, Message> {
         "Pin (Ctrl+P)"
     };
 
-    let action_bar = row![
-        button(text("Copy to Clipboard (Enter)").size(12))
+    let mut action_bar = row![
+        button(text("Copy (Enter)").size(12))
             .on_press(Message::CopyEntry(entry_id))
             .style(theme::primary_button)
             .padding([4, 10]),
@@ -397,6 +423,15 @@ fn render_detail_pane<'a>(state: &'a State) -> Element<'a, Message> {
     .spacing(8)
     .align_y(iced::Alignment::Center);
 
+    if entry.kind == ContentKind::Url {
+        action_bar = action_bar.push(
+            button(text("Open Link").size(12))
+                .on_press(Message::OpenUrl(entry.preview.clone()))
+                .style(theme::subtle_button)
+                .padding([4, 10]),
+        );
+    }
+
     let rel_time = time::format_entry_time(entry.copied_at);
     let source_str = entry.source_app.as_deref().unwrap_or("Unknown application");
     let kind_str = match entry.kind {
@@ -407,20 +442,20 @@ fn render_detail_pane<'a>(state: &'a State) -> Element<'a, Message> {
     let meta_info = column![
         row![
             text(format!("Source: {source_str}"))
-                .size(11)
+                .size(12)
                 .color(theme::TEXT_SECONDARY),
             Space::new().width(Length::Fill),
             text(format!("Copied: {rel_time}"))
-                .size(11)
+                .size(12)
                 .color(theme::TEXT_SECONDARY),
         ],
         row![
             text(format!("Format: {kind_str}"))
-                .size(11)
+                .size(12)
                 .color(theme::TEXT_SECONDARY),
             Space::new().width(Length::Fill),
             text(format!("Length: {} characters", entry.char_count))
-                .size(11)
+                .size(12)
                 .color(theme::TEXT_SECONDARY),
         ],
     ]
@@ -610,7 +645,7 @@ fn render_exclusion_card<'a>(state: &'a State) -> Element<'a, Message> {
             .into()
     } else {
         let mut chip_rows = column![].spacing(6);
-        for chunk in state.app_settings.excluded_apps.chunks(3) {
+        for chunk in state.app_settings.excluded_apps.chunks(2) {
             let mut chip_row = row![].spacing(6).align_y(iced::Alignment::Center);
             for app in chunk {
                 let chip = container(
@@ -790,6 +825,40 @@ fn render_startup_card<'a>(state: &'a State) -> Element<'a, Message> {
     ]
     .align_y(iced::Alignment::Center);
 
+    let blur_label = if state.app_settings.close_on_blur {
+        "Status: ENABLED (clicking outside GhostClipboard automatically hides the window)"
+    } else {
+        "Status: DISABLED (window remains open when other apps are clicked)"
+    };
+    let blur_btn_text = if state.app_settings.close_on_blur {
+        "Disable Dismiss on Blur"
+    } else {
+        "Enable Dismiss on Blur"
+    };
+    let blur_btn = button(text(blur_btn_text).size(12))
+        .on_press(Message::ToggleCloseOnBlur)
+        .style(theme::subtle_button)
+        .padding([4, 10]);
+
+    let blur_row = row![
+        column![
+            text("Dismiss on Focus Loss (Quick Dismiss):")
+                .size(12)
+                .color(theme::TEXT_SECONDARY),
+            text(blur_label)
+                .size(11)
+                .color(if state.app_settings.close_on_blur {
+                    ACCENT_GREEN
+                } else {
+                    TEXT_MUTED
+                }),
+        ]
+        .spacing(2),
+        Space::new().width(Length::Fill),
+        blur_btn,
+    ]
+    .align_y(iced::Alignment::Center);
+
     let hotkey_row = row![
         column![
             text("Global Keyboard Shortcut:")
@@ -814,7 +883,7 @@ fn render_startup_card<'a>(state: &'a State) -> Element<'a, Message> {
     .size(11)
     .color(TEXT_MUTED);
 
-    container(column![header, autostart_row, hotkey_row, tray_info].spacing(10))
+    container(column![header, autostart_row, blur_row, hotkey_row, tray_info].spacing(10))
         .style(theme::card_container)
         .padding(12)
         .width(Length::Fill)
@@ -827,17 +896,17 @@ fn render_maintenance_card<'a>(_state: &'a State) -> Element<'a, Message> {
         .size(12)
         .color(theme::TEXT_SECONDARY);
 
-    let clear_unpinned_btn = button(text("Clear Unpinned History").size(12))
-        .on_press(Message::ClearUnpinned)
+    let clear_unpinned_btn = button(text("Clear Unpinned History...").size(12))
+        .on_press(Message::RequestClearHistory)
         .style(theme::subtle_button)
         .padding([4, 12]);
 
-    let clear_all_btn = button(text("Clear All (Including Pinned)").size(12))
-        .on_press(Message::ClearAll)
+    let clear_all_btn = button(text("Clear All (Including Pinned)...").size(12))
+        .on_press(Message::RequestClearHistory)
         .style(theme::danger_button)
         .padding([4, 12]);
 
-    let actions = row![clear_unpinned_btn, clear_all_btn,]
+    let actions = row![clear_unpinned_btn, clear_all_btn]
         .spacing(10)
         .align_y(iced::Alignment::Center);
 
@@ -895,11 +964,11 @@ fn render_shortcuts_card<'a>() -> Element<'a, Message> {
                 .color(theme::TEXT_SECONDARY)
         ],
         row![
-            text("Delete (or Ctrl + D)")
+            text("Delete / Shift+Del / Ctrl+D")
                 .size(11)
                 .color(theme::TEXT_PRIMARY)
                 .width(160),
-            text("Permanently delete selected entry")
+            text("Permanently delete selected entry (use Shift+Del if searching)")
                 .size(11)
                 .color(theme::TEXT_SECONDARY)
         ],

@@ -21,7 +21,7 @@ pub const DEFAULT_EXCLUDED_APPS: &[&str] = &[
     "enpass.exe",
     "dashlane.exe",
     "nordpass.exe",
-    "robofrom.exe",
+    "roboform.exe",
 ];
 
 pub struct CaptureService {

@@ -7,8 +7,9 @@ use std::time::Duration;
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
-    IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
+    IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
+use windows::core::w;
 use windows::Win32::System::Memory::{
     GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
@@ -67,6 +68,18 @@ pub fn sequence_number() -> u32 {
 /// Returns `Ok(None)` if the clipboard does not currently contain `CF_UNICODETEXT`.
 /// Large payloads exceeding `max_bytes` return `Ok(None)` without allocating huge buffers.
 pub fn read_text(max_bytes: usize) -> Result<Option<String>, ClipboardError> {
+    // Respect Windows standard privacy formats used by password managers and extensions
+    let ignore_fmt = unsafe { RegisterClipboardFormatW(w!("Clipboard Viewer Ignore")) };
+    let exclude_fmt =
+        unsafe { RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing")) };
+
+    if (ignore_fmt != 0 && unsafe { IsClipboardFormatAvailable(ignore_fmt) }.is_ok())
+        || (exclude_fmt != 0 && unsafe { IsClipboardFormatAvailable(exclude_fmt) }.is_ok())
+    {
+        tracing::debug!("skipping clipboard content marked with Clipboard Viewer Ignore format");
+        return Ok(None);
+    }
+
     // Quick format check before locking
     if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }.is_err() {
         return Ok(None);

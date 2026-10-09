@@ -24,6 +24,8 @@ use crate::storage::{Storage, StorageHandle};
 
 /// Widget ID for the search input so it can be focused programmatically.
 pub const SEARCH_INPUT_ID: &str = "ghostclipboard_search_input";
+/// Widget ID for the scrollable history list.
+pub const HISTORY_SCROLL_ID: &str = "ghostclipboard_history_scroll";
 
 /// Command-line derived start-up options.
 #[derive(Debug, Clone, Default)]
@@ -90,6 +92,8 @@ pub struct State {
 
     // UI state
     pub search_query: String,
+    pub search_epoch: u64,
+    pub query_limit: usize,
     pub entry_filter: EntryFilter,
     pub active_tab: ViewTab,
     pub entries: Vec<EntrySummary>,
@@ -120,11 +124,13 @@ pub enum Message {
     Shell(ShellEvent),
     WindowOpened,
     CloseRequested(window::Id),
+    WindowEvent(window::Id, window::Event),
     StatsLoaded(Result<OpenReport, String>),
     ClipboardCaptured(Result<Option<RecordOutcome>, String>),
 
     // UI interactions
     SearchInputChanged(String),
+    DebouncedSearch(u64, String),
     ClearSearch,
     EntriesLoaded(Result<Vec<EntrySummary>, String>),
     SelectedTextLoaded {
@@ -150,6 +156,9 @@ pub enum Message {
     SwitchTab(ViewTab),
     KeyboardEvent(keyboard::Event),
     DismissFeedback,
+    OpenUrl(String),
+    ToggleCloseOnBlur,
+    LoadMoreEntries,
 
     // Settings actions
     SetMaxEntryBytes(usize),
@@ -203,6 +212,8 @@ impl State {
             previous_window: None,
 
             search_query: String::new(),
+            search_epoch: 0,
+            query_limit: 100,
             entry_filter: EntryFilter::All,
             active_tab: ViewTab::History,
             entries: Vec::new(),
@@ -245,6 +256,7 @@ impl State {
         Subscription::batch([
             Subscription::run_with(self.events.clone(), EventSource::stream),
             window::close_requests().map(Message::CloseRequested),
+            window::events().map(|(id, event)| Message::WindowEvent(id, event)),
             keyboard::listen().map(Message::KeyboardEvent),
         ])
     }
@@ -262,9 +274,38 @@ impl State {
                     Task::none()
                 }
             }
+            Message::WindowEvent(_id, event) => match event {
+                window::Event::Unfocused => {
+                    if self.app_settings.close_on_blur && self.visible {
+                        self.hide()
+                    } else {
+                        Task::none()
+                    }
+                }
+                _ => Task::none(),
+            },
             Message::SearchInputChanged(query) => {
-                self.search_query = query;
-                self.reload_entries()
+                self.search_query = query.clone();
+                self.search_epoch += 1;
+                let epoch = self.search_epoch;
+                if query.trim().is_empty() {
+                    self.reload_entries()
+                } else {
+                    Task::perform(
+                        async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                            (epoch, query)
+                        },
+                        |(epoch, query)| Message::DebouncedSearch(epoch, query),
+                    )
+                }
+            }
+            Message::DebouncedSearch(epoch, _query) => {
+                if self.search_epoch == epoch {
+                    self.reload_entries()
+                } else {
+                    Task::none()
+                }
             }
             Message::ClearSearch => {
                 self.search_query.clear();
@@ -278,14 +319,17 @@ impl State {
                     self.selected_full_text = None;
                     Task::none()
                 } else {
-                    let idx = self.selected_index.unwrap_or(0).min(self.entries.len() - 1);
+                    let idx = if self.search_query.trim().is_empty() {
+                        self.selected_index.unwrap_or(0).min(self.entries.len() - 1)
+                    } else {
+                        0
+                    };
                     self.select_index(idx)
                 }
             }
             Message::EntriesLoaded(Err(err)) => {
                 self.is_loading = false;
-                self.status_feedback = Some((format!("Failed to load entries: {err}"), true));
-                Task::none()
+                self.set_status_feedback(format!("Failed to load entries: {err}"), true)
             }
             Message::SelectedTextLoaded { id, text } => {
                 if let Some(entry) = self.selected_entry()
@@ -307,12 +351,10 @@ impl State {
             }
             Message::CopyEntry(id) => self.perform_copy(id),
             Message::EntryCopied(Ok(())) => {
-                self.status_feedback = Some(("Copied to clipboard".to_string(), false));
-                Task::none()
+                self.set_status_feedback("Copied to clipboard".to_string(), false)
             }
             Message::EntryCopied(Err(err)) => {
-                self.status_feedback = Some((format!("Copy failed: {err}"), true));
-                Task::none()
+                self.set_status_feedback(format!("Copy failed: {err}"), true)
             }
             Message::TogglePin(id) => {
                 let storage = self.storage.clone();
@@ -327,12 +369,11 @@ impl State {
                     Some(false) => "Entry unpinned",
                     None => "Entry not found",
                 };
-                self.status_feedback = Some((msg.to_string(), false));
-                self.refresh_stats_and_entries()
+                let feedback_task = self.set_status_feedback(msg.to_string(), false);
+                Task::batch([feedback_task, self.refresh_stats_and_entries()])
             }
             Message::PinToggled(Err(err)) => {
-                self.status_feedback = Some((format!("Pin toggle failed: {err}"), true));
-                Task::none()
+                self.set_status_feedback(format!("Pin toggle failed: {err}"), true)
             }
             Message::DeleteEntry(id) => {
                 let storage = self.storage.clone();
@@ -342,14 +383,15 @@ impl State {
                 )
             }
             Message::EntryDeleted(Ok(deleted)) => {
-                if deleted {
-                    self.status_feedback = Some(("Entry deleted".to_string(), false));
-                }
-                self.refresh_stats_and_entries()
+                let feedback_task = if deleted {
+                    self.set_status_feedback("Entry deleted".to_string(), false)
+                } else {
+                    Task::none()
+                };
+                Task::batch([feedback_task, self.refresh_stats_and_entries()])
             }
             Message::EntryDeleted(Err(err)) => {
-                self.status_feedback = Some((format!("Delete failed: {err}"), true));
-                Task::none()
+                self.set_status_feedback(format!("Delete failed: {err}"), true)
             }
             Message::RequestClearHistory => {
                 self.confirm_clear = true;
@@ -376,12 +418,12 @@ impl State {
                 )
             }
             Message::HistoryCleared(Ok(count)) => {
-                self.status_feedback = Some((format!("Cleared {count} entries"), false));
-                self.refresh_stats_and_entries()
+                let feedback_task =
+                    self.set_status_feedback(format!("Cleared {count} entries"), false);
+                Task::batch([feedback_task, self.refresh_stats_and_entries()])
             }
             Message::HistoryCleared(Err(err)) => {
-                self.status_feedback = Some((format!("Clear history failed: {err}"), true));
-                Task::none()
+                self.set_status_feedback(format!("Clear history failed: {err}"), true)
             }
             Message::TogglePause => {
                 let capture = self.capture.clone();
@@ -400,8 +442,7 @@ impl State {
                 } else {
                     "Clipboard capture resumed"
                 };
-                self.status_feedback = Some((msg.to_string(), false));
-                Task::none()
+                self.set_status_feedback(msg.to_string(), false)
             }
             Message::ToggleAutostart => {
                 let new_val = !self.autostart_enabled;
@@ -415,14 +456,12 @@ impl State {
                         } else {
                             "Launch-at-login disabled"
                         };
-                        self.status_feedback = Some((msg.to_string(), false));
+                        self.set_status_feedback(msg.to_string(), false)
                     }
                     Err(err) => {
-                        self.status_feedback =
-                            Some((format!("Failed to update autostart: {err}"), true));
+                        self.set_status_feedback(format!("Failed to update autostart: {err}"), true)
                     }
                 }
-                Task::none()
             }
             Message::SwitchTab(tab) => {
                 self.active_tab = tab;
@@ -441,13 +480,33 @@ impl State {
             Message::SetRetentionMaxEntries(entries) => {
                 self.app_settings.capture.retention.max_entries = entries;
                 self.persist_settings();
-                self.apply_retention_and_reload()
+                Task::none()
             }
             Message::SetRetentionMaxAgeDays(days) => {
                 self.app_settings.capture.retention.max_age =
                     days.map(|d| std::time::Duration::from_secs(d * 86_400));
                 self.persist_settings();
-                self.apply_retention_and_reload()
+                Task::none()
+            }
+            Message::OpenUrl(url) => {
+                let _ = std::process::Command::new("rundll32.exe")
+                    .args(["url.dll,FileProtocolHandler", &url])
+                    .spawn();
+                self.set_status_feedback("Opening link in browser...".to_string(), false)
+            }
+            Message::ToggleCloseOnBlur => {
+                self.app_settings.close_on_blur = !self.app_settings.close_on_blur;
+                self.persist_settings();
+                let msg = if self.app_settings.close_on_blur {
+                    "Close-on-focus-loss enabled"
+                } else {
+                    "Close-on-focus-loss disabled"
+                };
+                self.set_status_feedback(msg.to_string(), false)
+            }
+            Message::LoadMoreEntries => {
+                self.query_limit += 100;
+                self.reload_entries()
             }
             Message::ExclusionInputChanged(text) => {
                 self.new_excluded_app_input = text;
@@ -619,7 +678,10 @@ impl State {
                     Task::none()
                 }
                 keyboard::Key::Named(keyboard::key::Named::Delete) => {
-                    if let Some(entry) = self.selected_entry() {
+                    // Plain Delete only deletes an entry if the search query is empty or with modifiers,
+                    // preventing accidental entry deletion during inline search text editing.
+                    let can_delete = modifiers.shift() || modifiers.control() || self.search_query.is_empty();
+                    if let Some(entry) = self.selected_entry().filter(|_| can_delete) {
                         let id = entry.id;
                         return self.update(Message::DeleteEntry(id));
                     }
@@ -650,6 +712,16 @@ impl State {
 
     pub fn selected_entry(&self) -> Option<&EntrySummary> {
         self.selected_index.and_then(|idx| self.entries.get(idx))
+    }
+
+    pub fn set_status_feedback(&mut self, text: String, is_err: bool) -> Task<Message> {
+        self.status_feedback = Some((text, is_err));
+        Task::perform(
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            },
+            |_| Message::DismissFeedback,
+        )
     }
 
     pub fn persist_settings(&mut self) {
@@ -693,13 +765,28 @@ impl State {
         let id = self.entries[index].id;
         let storage = self.storage.clone();
 
-        Task::perform(
+        let load_task = Task::perform(
             async move {
                 let text = storage.get_text(id).await.map_err(|e| e.to_string())?;
                 Ok(text)
             },
             move |text| Message::SelectedTextLoaded { id, text },
-        )
+        );
+
+        let scroll_y = if index > 2 {
+            (index as f32 - 1.5) * 80.0
+        } else {
+            0.0
+        };
+        let scroll_task = iced::widget::operation::scroll_to(
+            iced::widget::Id::new(HISTORY_SCROLL_ID),
+            iced::widget::operation::AbsoluteOffset {
+                x: None,
+                y: Some(scroll_y),
+            },
+        );
+
+        Task::batch([load_task, scroll_task])
     }
 
     fn perform_copy(&mut self, id: EntryId) -> Task<Message> {
@@ -738,12 +825,13 @@ impl State {
         } else {
             Some(self.search_query.trim().to_string())
         };
+        let limit = self.query_limit;
 
         Task::perform(
             async move {
                 let query = HistoryQuery {
                     search_term: query_term,
-                    limit: 100,
+                    limit,
                     offset: 0,
                 };
                 storage.list(query).await.map_err(|e| e.to_string())
@@ -762,6 +850,7 @@ impl State {
         Task::batch([reload, report])
     }
 
+    #[allow(dead_code)]
     fn apply_retention_and_reload(&mut self) -> Task<Message> {
         let storage = self.storage.clone();
         let policy = self.app_settings.capture.retention;
