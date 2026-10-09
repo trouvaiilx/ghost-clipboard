@@ -280,6 +280,11 @@ pub fn default_db_path() -> Result<PathBuf> {
     Ok(default_data_dir()?.join("history.db"))
 }
 
+/// Returns the default path to the settings JSON file.
+pub fn default_settings_path() -> Result<PathBuf> {
+    Ok(default_data_dir()?.join("settings.json"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

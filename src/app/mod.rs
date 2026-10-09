@@ -15,7 +15,7 @@ pub mod view;
 
 use crate::branding;
 use crate::domain::entry::{EntryId, EntrySummary};
-use crate::domain::settings::CaptureSettings;
+use crate::domain::settings::{AppSettings, DedupMode};
 use crate::platform::windows::Shell;
 use crate::platform::{self, Component, ShellEvent, TrayCommand};
 use crate::services::CaptureService;
@@ -99,6 +99,11 @@ pub struct State {
     pub confirm_clear: bool,
     pub status_feedback: Option<(String, bool)>,
 
+    // Settings & privacy state
+    pub app_settings: AppSettings,
+    pub settings_path: PathBuf,
+    pub new_excluded_app_input: String,
+
     // Diagnostics & service state
     pub clipboard_notifications: u64,
     pub entries_recorded: usize,
@@ -145,6 +150,15 @@ pub enum Message {
     SwitchTab(ViewTab),
     KeyboardEvent(keyboard::Event),
     DismissFeedback,
+
+    // Settings actions
+    SetMaxEntryBytes(usize),
+    SetDedupMode(DedupMode),
+    SetRetentionMaxEntries(Option<usize>),
+    SetRetentionMaxAgeDays(Option<u64>),
+    ExclusionInputChanged(String),
+    AddExcludedApp,
+    RemoveExcludedApp(String),
 }
 
 impl State {
@@ -167,8 +181,16 @@ impl State {
         tracing::info!("native shell started");
 
         let storage_handle = storage.handle();
-        let capture_service =
-            CaptureService::new(storage_handle.clone(), CaptureSettings::default());
+
+        let settings_path = crate::storage::default_settings_path()
+            .unwrap_or_else(|_| PathBuf::from("settings.json"));
+        let mut app_settings = AppSettings::load_or_default(&settings_path);
+        let autostart_enabled = platform::is_autostart_enabled().unwrap_or(false);
+        app_settings.autostart = autostart_enabled;
+
+        let mut capture_service =
+            CaptureService::new(storage_handle.clone(), app_settings.capture.clone());
+        capture_service.set_excluded_apps(app_settings.excluded_apps.clone());
         let capture = Arc::new(TokioMutex::new(capture_service));
 
         let mut state = Self {
@@ -190,12 +212,16 @@ impl State {
             confirm_clear: false,
             status_feedback: None,
 
+            app_settings,
+            settings_path,
+            new_excluded_app_input: String::new(),
+
             clipboard_notifications: 0,
             entries_recorded: 0,
             pinned_count: 0,
             hotkey_presses: 0,
             is_paused: false,
-            autostart_enabled: platform::is_autostart_enabled().unwrap_or(false),
+            autostart_enabled,
             db_path,
             faults,
         };
@@ -382,6 +408,8 @@ impl State {
                 match platform::set_autostart_enabled(new_val) {
                     Ok(()) => {
                         self.autostart_enabled = new_val;
+                        self.app_settings.autostart = new_val;
+                        self.persist_settings();
                         let msg = if new_val {
                             "Launch-at-login enabled"
                         } else {
@@ -398,6 +426,59 @@ impl State {
             }
             Message::SwitchTab(tab) => {
                 self.active_tab = tab;
+                Task::none()
+            }
+            Message::SetMaxEntryBytes(bytes) => {
+                self.app_settings.capture.max_entry_bytes = bytes;
+                self.persist_settings();
+                Task::none()
+            }
+            Message::SetDedupMode(mode) => {
+                self.app_settings.capture.dedup = mode;
+                self.persist_settings();
+                Task::none()
+            }
+            Message::SetRetentionMaxEntries(entries) => {
+                self.app_settings.capture.retention.max_entries = entries;
+                self.persist_settings();
+                self.apply_retention_and_reload()
+            }
+            Message::SetRetentionMaxAgeDays(days) => {
+                self.app_settings.capture.retention.max_age =
+                    days.map(|d| std::time::Duration::from_secs(d * 86_400));
+                self.persist_settings();
+                self.apply_retention_and_reload()
+            }
+            Message::ExclusionInputChanged(text) => {
+                self.new_excluded_app_input = text;
+                Task::none()
+            }
+            Message::AddExcludedApp => {
+                let trimmed = self.new_excluded_app_input.trim().to_ascii_lowercase();
+                if !trimmed.is_empty() {
+                    let exe_name = if !trimmed.ends_with(".exe") && !trimmed.contains('.') {
+                        format!("{trimmed}.exe")
+                    } else {
+                        trimmed
+                    };
+                    if !self
+                        .app_settings
+                        .excluded_apps
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&exe_name))
+                    {
+                        self.app_settings.excluded_apps.push(exe_name);
+                        self.new_excluded_app_input.clear();
+                        self.persist_settings();
+                    }
+                }
+                Task::none()
+            }
+            Message::RemoveExcludedApp(app) => {
+                self.app_settings
+                    .excluded_apps
+                    .retain(|a| !a.eq_ignore_ascii_case(&app));
+                self.persist_settings();
                 Task::none()
             }
             Message::StatsLoaded(Ok(report)) => {
@@ -547,6 +628,24 @@ impl State {
         self.selected_index.and_then(|idx| self.entries.get(idx))
     }
 
+    pub fn persist_settings(&mut self) {
+        if let Err(e) = self.app_settings.save(&self.settings_path) {
+            tracing::error!(%e, "failed to save settings to disk");
+            self.status_feedback = Some((format!("Failed to save settings: {e}"), true));
+        } else {
+            self.status_feedback = Some(("Settings saved".to_string(), false));
+        }
+
+        let capture = self.capture.clone();
+        let capture_settings = self.app_settings.capture.clone();
+        let excluded_apps = self.app_settings.excluded_apps.clone();
+        tokio::spawn(async move {
+            let mut guard = capture.lock().await;
+            guard.set_settings(capture_settings);
+            guard.set_excluded_apps(excluded_apps);
+        });
+    }
+
     pub fn navigate_selection(&mut self, delta: isize) -> Task<Message> {
         let count = self.entries.len();
         if count == 0 {
@@ -634,6 +733,24 @@ impl State {
         let storage = self.storage.clone();
         let report = Task::perform(
             async move { storage.report().await.map_err(|e| e.to_string()) },
+            Message::StatsLoaded,
+        );
+        Task::batch([reload, report])
+    }
+
+    fn apply_retention_and_reload(&mut self) -> Task<Message> {
+        let storage = self.storage.clone();
+        let policy = self.app_settings.capture.retention;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let reload = self.reload_entries();
+        let report = Task::perform(
+            async move {
+                let _ = storage.apply_retention(policy, now_ms).await;
+                storage.report().await.map_err(|e| e.to_string())
+            },
             Message::StatsLoaded,
         );
         Task::batch([reload, report])

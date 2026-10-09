@@ -205,3 +205,44 @@ pub fn pill_button(is_active: bool) -> impl Fn(&Theme, button::Status) -> button
         }
     }
 }
+
+pub fn standard_input_style(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(BG_INPUT),
+        border: Border {
+            color: BORDER_SUBTLE,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        icon: TEXT_MUTED,
+        placeholder: TEXT_MUTED,
+        value: TEXT_PRIMARY,
+        selection: BG_SELECTED,
+    }
+}
+
+pub fn card_container(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_SURFACE)),
+        border: Border {
+            color: BORDER_SUBTLE,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        text_color: Some(TEXT_PRIMARY),
+        ..container::Style::default()
+    }
+}
+
+pub fn chip_container(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_INPUT)),
+        border: Border {
+            color: BORDER_SUBTLE,
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        text_color: Some(TEXT_SECONDARY),
+        ..container::Style::default()
+    }
+}

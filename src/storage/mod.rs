@@ -9,7 +9,9 @@ pub mod repository;
 pub mod worker;
 
 pub use repository::{HistoryQuery, OpenReport, RecordOutcome, Repository};
-pub use worker::{Reply, Storage, StorageHandle, default_data_dir, default_db_path};
+pub use worker::{
+    Reply, Storage, StorageHandle, default_data_dir, default_db_path, default_settings_path,
+};
 
 /// Storage failures. Messages describe *what* failed and never include clipboard
 /// content (SQLite error text does not echo bound parameters).

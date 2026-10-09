@@ -9,6 +9,7 @@ use crate::app::theme::{self, ACCENT_AMBER, ACCENT_BLUE, ACCENT_GREEN, ACCENT_RE
 use crate::app::time;
 use crate::app::{EntryFilter, Message, SEARCH_INPUT_ID, State, ViewTab};
 use crate::domain::entry::{ContentKind, EntrySummary};
+use crate::domain::settings::DedupMode;
 
 /// Render the complete window interface.
 pub fn view<'a>(state: &'a State) -> Element<'a, Message> {
@@ -452,30 +453,15 @@ fn render_detail_pane<'a>(state: &'a State) -> Element<'a, Message> {
         .into()
 }
 
-/// Settings panel view.
+/// Settings and privacy control panel.
 fn render_settings_view<'a>(state: &'a State) -> Element<'a, Message> {
-    let title = text("GhostClipboard Settings & System Health").size(16);
-
-    let storage_section = column![
-        text("Storage & Database").size(14),
-        text(format!("Database file: {}", state.db_path))
-            .size(12)
-            .color(theme::TEXT_SECONDARY),
-        text(format!(
-            "Total entries recorded: {} ({} pinned)",
-            state.entries_recorded, state.pinned_count
-        ))
-        .size(12)
-        .color(theme::TEXT_SECONDARY),
-    ]
-    .spacing(4);
-
-    let capture_section = column![
-        text("Clipboard Monitoring").size(14),
+    let title = row![
+        text("Settings & Privacy Controls").size(16),
+        Space::new().width(Length::Fill),
         text(if state.is_paused {
-            "Capture status: PAUSED (notifications ignored)"
+            "● Capture Paused"
         } else {
-            "Capture status: ACTIVE (recording clipboard events)"
+            "● Capture Active"
         })
         .size(12)
         .color(if state.is_paused {
@@ -483,43 +469,280 @@ fn render_settings_view<'a>(state: &'a State) -> Element<'a, Message> {
         } else {
             ACCENT_GREEN
         }),
-        text(format!(
-            "Windows clipboard notifications received: {}",
-            state.clipboard_notifications
-        ))
-        .size(12)
-        .color(theme::TEXT_SECONDARY),
-        text(format!(
-            "Global shortcut activations: {}",
-            state.hotkey_presses
-        ))
-        .size(12)
-        .color(theme::TEXT_SECONDARY),
+    ]
+    .align_y(iced::Alignment::Center);
+
+    let mut content = column![
+        title,
+        render_privacy_card(state),
+        render_exclusion_card(state),
+        render_rules_card(state),
+        render_startup_card(state),
+        render_maintenance_card(state),
+        render_shortcuts_card(),
+    ]
+    .spacing(12);
+
+    if !state.faults.is_empty() {
+        let mut fault_col =
+            column![text("Native Component Faults").size(14).color(ACCENT_RED)].spacing(4);
+        for (component, message) in &state.faults {
+            fault_col = fault_col.push(
+                text(format!("{component:?}: {message}"))
+                    .size(12)
+                    .color(ACCENT_RED),
+            );
+        }
+        content = content.push(
+            container(fault_col)
+                .style(theme::card_container)
+                .padding(12)
+                .width(Length::Fill),
+        );
+    }
+
+    container(scrollable(content).width(Length::Fill).height(Length::Fill))
+        .padding(16)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn render_privacy_card<'a>(state: &'a State) -> Element<'a, Message> {
+    let header = row![
+        text("🛡️  Local Privacy Guarantee")
+            .size(14)
+            .color(ACCENT_GREEN),
+        Space::new().width(Length::Fill),
+        text("Offline Only").size(11).color(ACCENT_GREEN),
+    ]
+    .align_y(iced::Alignment::Center);
+
+    let desc = text(
+        "GhostClipboard operates entirely offline on your local machine. \
+        Clipboard history is stored strictly in a local SQLite database (WAL mode). \
+        There is zero telemetry, zero analytics, zero background cloud sync, \
+        and no network sockets are opened.",
+    )
+    .size(12)
+    .color(theme::TEXT_SECONDARY);
+
+    let paths = column![
+        row![
+            text("Database file:").size(11).color(TEXT_MUTED).width(110),
+            text(&state.db_path).size(11).color(theme::TEXT_PRIMARY),
+        ]
+        .spacing(8),
+        row![
+            text("Settings file:").size(11).color(TEXT_MUTED).width(110),
+            text(state.settings_path.to_string_lossy().to_string())
+                .size(11)
+                .color(theme::TEXT_PRIMARY),
+        ]
+        .spacing(8),
+        row![
+            text("Storage stats:").size(11).color(TEXT_MUTED).width(110),
+            text(format!(
+                "{} total entries ({} pinned)",
+                state.entries_recorded, state.pinned_count
+            ))
+            .size(11)
+            .color(theme::TEXT_PRIMARY),
+        ]
+        .spacing(8),
     ]
     .spacing(4);
 
-    let shortcuts_section = column![
-        text("Keyboard Shortcuts").size(14),
-        text("Global Hotkey to toggle history: Ctrl+Shift+Space")
+    container(column![header, desc, paths].spacing(10))
+        .style(theme::card_container)
+        .padding(12)
+        .width(Length::Fill)
+        .into()
+}
+
+fn render_exclusion_card<'a>(state: &'a State) -> Element<'a, Message> {
+    let header = text("Application Exclusion List (Password Managers & Sensitive Apps)").size(14);
+    let desc = text(
+        "Clipboard changes originating from these executable processes are completely ignored \
+        and never saved to disk. Major password managers are excluded by default.",
+    )
+    .size(12)
+    .color(theme::TEXT_SECONDARY);
+
+    let caveat = text(
+        "Attribution note: Foreground process name is detected at the moment of copy via Windows APIs. \
+        Avoid rapid window switching during sensitive copy operations.",
+    )
+    .size(11)
+    .color(TEXT_MUTED);
+
+    let input = text_input(
+        "Enter executable name (e.g. keepass.exe, bitwarden.exe, slack.exe)...",
+        &state.new_excluded_app_input,
+    )
+    .style(theme::standard_input_style)
+    .on_input(Message::ExclusionInputChanged)
+    .on_submit(Message::AddExcludedApp)
+    .padding(6)
+    .size(12);
+
+    let add_btn = button(text("+ Add Application").size(12))
+        .on_press(Message::AddExcludedApp)
+        .style(theme::primary_button)
+        .padding([6, 12]);
+
+    let input_row = row![input, add_btn]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+    let chips_element: Element<'a, Message> = if state.app_settings.excluded_apps.is_empty() {
+        text("No excluded applications configured.")
             .size(12)
-            .color(theme::TEXT_SECONDARY),
-        text("Arrow Up / Down: Select previous / next entry")
+            .color(TEXT_MUTED)
+            .into()
+    } else {
+        let mut chip_rows = column![].spacing(6);
+        for chunk in state.app_settings.excluded_apps.chunks(3) {
+            let mut chip_row = row![].spacing(6).align_y(iced::Alignment::Center);
+            for app in chunk {
+                let chip = container(
+                    row![
+                        text(app.as_str()).size(12).color(theme::TEXT_PRIMARY),
+                        button(text("✕").size(11).color(ACCENT_RED))
+                            .on_press(Message::RemoveExcludedApp(app.clone()))
+                            .style(theme::subtle_button)
+                            .padding([1, 4]),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center),
+                )
+                .style(theme::chip_container)
+                .padding([3, 8]);
+                chip_row = chip_row.push(chip);
+            }
+            chip_rows = chip_rows.push(chip_row);
+        }
+        chip_rows.into()
+    };
+
+    container(column![header, desc, caveat, input_row, chips_element].spacing(10))
+        .style(theme::card_container)
+        .padding(12)
+        .width(Length::Fill)
+        .into()
+}
+
+fn render_rules_card<'a>(state: &'a State) -> Element<'a, Message> {
+    let header = text("Capture Rules & History Retention").size(14);
+
+    let current_bytes = state.app_settings.capture.max_entry_bytes;
+    let byte_options: [(usize, &str); 5] = [
+        (512 * 1024, "512 KB"),
+        (1024 * 1024, "1 MB"),
+        (2 * 1024 * 1024, "2 MB"),
+        (5 * 1024 * 1024, "5 MB"),
+        (10 * 1024 * 1024, "10 MB"),
+    ];
+    let mut byte_row = row![
+        text("Max entry size:")
             .size(12)
-            .color(theme::TEXT_SECONDARY),
-        text("Enter: Copy selected entry to clipboard and restore previous app")
-            .size(12)
-            .color(theme::TEXT_SECONDARY),
-        text("Escape: Dismiss history window / clear search")
-            .size(12)
-            .color(theme::TEXT_SECONDARY),
-        text("Ctrl+P: Pin / unpin selected entry")
-            .size(12)
-            .color(theme::TEXT_SECONDARY),
-        text("Delete (or Ctrl+D): Delete selected entry")
-            .size(12)
-            .color(theme::TEXT_SECONDARY),
+            .color(theme::TEXT_SECONDARY)
+            .width(160)
     ]
-    .spacing(4);
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    for (bytes, label) in byte_options {
+        let is_active = current_bytes == bytes;
+        byte_row = byte_row.push(
+            button(text(label).size(11))
+                .on_press(Message::SetMaxEntryBytes(bytes))
+                .style(theme::pill_button(is_active))
+                .padding([3, 8]),
+        );
+    }
+
+    let current_dedup = state.app_settings.capture.dedup;
+    let dedup_row = row![
+        text("Duplicate handling:")
+            .size(12)
+            .color(theme::TEXT_SECONDARY)
+            .width(160),
+        button(text("Move to top (entire history)").size(11))
+            .on_press(Message::SetDedupMode(DedupMode::Anywhere))
+            .style(theme::pill_button(current_dedup == DedupMode::Anywhere))
+            .padding([3, 8]),
+        button(text("Consecutive copies only").size(11))
+            .on_press(Message::SetDedupMode(DedupMode::LatestOnly))
+            .style(theme::pill_button(current_dedup == DedupMode::LatestOnly))
+            .padding([3, 8]),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    let current_max_entries = state.app_settings.capture.retention.max_entries;
+    let entry_options: [(Option<usize>, &str); 5] = [
+        (Some(200), "200"),
+        (Some(500), "500"),
+        (Some(1000), "1,000"),
+        (Some(5000), "5,000"),
+        (None, "Unlimited"),
+    ];
+    let mut max_entries_row = row![
+        text("Max unpinned entries:")
+            .size(12)
+            .color(theme::TEXT_SECONDARY)
+            .width(160)
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    for (opt, label) in entry_options {
+        let is_active = current_max_entries == opt;
+        max_entries_row = max_entries_row.push(
+            button(text(label).size(11))
+                .on_press(Message::SetRetentionMaxEntries(opt))
+                .style(theme::pill_button(is_active))
+                .padding([3, 8]),
+        );
+    }
+
+    let current_max_age_days = state.app_settings.capture.retention.max_age_days();
+    let age_options: [(Option<u64>, &str); 5] = [
+        (Some(7), "7 Days"),
+        (Some(30), "30 Days"),
+        (Some(90), "90 Days"),
+        (Some(365), "1 Year"),
+        (None, "Keep Forever"),
+    ];
+    let mut max_age_row = row![
+        text("Retention age limit:")
+            .size(12)
+            .color(theme::TEXT_SECONDARY)
+            .width(160)
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    for (opt, label) in age_options {
+        let is_active = current_max_age_days == opt;
+        max_age_row = max_age_row.push(
+            button(text(label).size(11))
+                .on_press(Message::SetRetentionMaxAgeDays(opt))
+                .style(theme::pill_button(is_active))
+                .padding([3, 8]),
+        );
+    }
+
+    container(column![header, byte_row, dedup_row, max_entries_row, max_age_row].spacing(10))
+        .style(theme::card_container)
+        .padding(12)
+        .width(Length::Fill)
+        .into()
+}
+
+fn render_startup_card<'a>(state: &'a State) -> Element<'a, Message> {
+    let header = text("System Integration & Background Operation").size(14);
 
     let autostart_label = if state.autostart_enabled {
         "Status: ENABLED (starts automatically on Windows sign-in with --background)"
@@ -536,56 +759,145 @@ fn render_settings_view<'a>(state: &'a State) -> Element<'a, Message> {
         .style(theme::subtle_button)
         .padding([4, 10]);
 
-    let startup_section = column![
-        text("System Startup & Background Operation").size(14),
-        text("GhostClipboard runs silently in the system tray when the window is closed.")
-            .size(12)
-            .color(theme::TEXT_SECONDARY),
-        row![
-            text(autostart_label)
+    let autostart_row = row![
+        column![
+            text("Launch at Login (Registry HKCU\\Run):")
                 .size(12)
+                .color(theme::TEXT_SECONDARY),
+            text(autostart_label)
+                .size(11)
                 .color(if state.autostart_enabled {
                     ACCENT_GREEN
                 } else {
-                    theme::TEXT_SECONDARY
+                    TEXT_MUTED
                 }),
-            Space::new().width(Length::Fill),
-            autostart_btn,
         ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center),
-        text("Single-instance protection: Active (duplicate launches activate this window)")
-            .size(11)
-            .color(TEXT_MUTED),
+        .spacing(2),
+        Space::new().width(Length::Fill),
+        autostart_btn,
     ]
-    .spacing(6);
+    .align_y(iced::Alignment::Center);
 
-    let mut content = column![
-        title,
-        storage_section,
-        capture_section,
-        startup_section,
-        shortcuts_section
+    let hotkey_row = row![
+        column![
+            text("Global Keyboard Shortcut:")
+                .size(12)
+                .color(theme::TEXT_SECONDARY),
+            text("Press anywhere in Windows to toggle the clipboard history window.")
+                .size(11)
+                .color(TEXT_MUTED),
+        ]
+        .spacing(2),
+        Space::new().width(Length::Fill),
+        container(text("Ctrl + Shift + Space").size(12).color(ACCENT_BLUE))
+            .style(theme::chip_container)
+            .padding([4, 8]),
     ]
-    .spacing(16);
+    .align_y(iced::Alignment::Center);
 
-    if !state.faults.is_empty() {
-        let mut fault_col =
-            column![text("Native Component Faults").size(14).color(ACCENT_RED)].spacing(4);
-        for (component, message) in &state.faults {
-            fault_col = fault_col.push(
-                text(format!("{component:?}: {message}"))
-                    .size(12)
-                    .color(ACCENT_RED),
-            );
-        }
-        content = content.push(fault_col);
-    }
+    let tray_info = text(
+        "Tray & Single-Instance: Closing the window minimizes GhostClipboard to the system tray. \
+        Starting a second instance automatically activates this running instance.",
+    )
+    .size(11)
+    .color(TEXT_MUTED);
 
-    container(scrollable(content).width(Length::Fill).height(Length::Fill))
-        .padding(16)
+    container(column![header, autostart_row, hotkey_row, tray_info].spacing(10))
+        .style(theme::card_container)
+        .padding(12)
         .width(Length::Fill)
-        .height(Length::Fill)
+        .into()
+}
+
+fn render_maintenance_card<'a>(_state: &'a State) -> Element<'a, Message> {
+    let header = text("History Maintenance & Database Actions").size(14);
+    let desc = text("Permanently delete stored clipboard history from the local database.")
+        .size(12)
+        .color(theme::TEXT_SECONDARY);
+
+    let clear_unpinned_btn = button(text("Clear Unpinned History").size(12))
+        .on_press(Message::ClearUnpinned)
+        .style(theme::subtle_button)
+        .padding([4, 12]);
+
+    let clear_all_btn = button(text("Clear All (Including Pinned)").size(12))
+        .on_press(Message::ClearAll)
+        .style(theme::danger_button)
+        .padding([4, 12]);
+
+    let actions = row![clear_unpinned_btn, clear_all_btn,]
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
+
+    container(column![header, desc, actions].spacing(8))
+        .style(theme::card_container)
+        .padding(12)
+        .width(Length::Fill)
+        .into()
+}
+
+fn render_shortcuts_card<'a>() -> Element<'a, Message> {
+    let header = text("Keyboard Shortcuts Reference").size(14);
+
+    let shortcuts = column![
+        row![
+            text("Ctrl + Shift + Space")
+                .size(11)
+                .color(ACCENT_BLUE)
+                .width(160),
+            text("Toggle GhostClipboard history anywhere in Windows")
+                .size(11)
+                .color(theme::TEXT_SECONDARY)
+        ],
+        row![
+            text("Arrow Up / Down")
+                .size(11)
+                .color(theme::TEXT_PRIMARY)
+                .width(160),
+            text("Navigate through search results or history")
+                .size(11)
+                .color(theme::TEXT_SECONDARY)
+        ],
+        row![
+            text("Enter").size(11).color(theme::TEXT_PRIMARY).width(160),
+            text("Copy selected entry to clipboard and switch back to previous app")
+                .size(11)
+                .color(theme::TEXT_SECONDARY)
+        ],
+        row![
+            text("Escape")
+                .size(11)
+                .color(theme::TEXT_PRIMARY)
+                .width(160),
+            text("Dismiss history window or clear active search filter")
+                .size(11)
+                .color(theme::TEXT_SECONDARY)
+        ],
+        row![
+            text("Ctrl + P")
+                .size(11)
+                .color(theme::TEXT_PRIMARY)
+                .width(160),
+            text("Pin / unpin selected entry (pinned entries survive retention)")
+                .size(11)
+                .color(theme::TEXT_SECONDARY)
+        ],
+        row![
+            text("Delete (or Ctrl + D)")
+                .size(11)
+                .color(theme::TEXT_PRIMARY)
+                .width(160),
+            text("Permanently delete selected entry")
+                .size(11)
+                .color(theme::TEXT_SECONDARY)
+        ],
+    ]
+    .spacing(4);
+
+    container(column![header, shortcuts].spacing(8))
+        .style(theme::card_container)
+        .padding(12)
+        .width(Length::Fill)
         .into()
 }
 

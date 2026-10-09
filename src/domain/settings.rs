@@ -1,13 +1,12 @@
-//! Policies that govern capture and history size.
-//!
-//! Persistence of these settings (JSON on disk, a settings screen) arrives in a
-//! later phase; the types and their defaults live here so capture and storage
-//! can already be driven by them.
+//! Policies and application settings that govern capture, retention, and privacy.
 
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::Duration;
 
 /// How repeated copies of identical text are handled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DedupMode {
     /// Copying text that already exists anywhere in history moves the existing
     /// entry to the top instead of adding another one. Pin state is kept.
@@ -20,7 +19,7 @@ pub enum DedupMode {
 
 /// Limits on how much history is kept. Pinned entries are never removed by
 /// retention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetentionPolicy {
     /// Keep at most this many *unpinned* entries.
     pub max_entries: Option<usize>,
@@ -42,6 +41,11 @@ impl RetentionPolicy {
             now_ms.saturating_sub(age_ms)
         })
     }
+
+    /// Convenience getter for max age in whole days.
+    pub fn max_age_days(&self) -> Option<u64> {
+        self.max_age.map(|d| d.as_secs() / 86_400)
+    }
 }
 
 impl Default for RetentionPolicy {
@@ -58,7 +62,7 @@ pub const MIN_ENTRY_BYTES: usize = 1024;
 pub const MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Everything the capture pipeline needs to decide what to record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureSettings {
     /// Largest accepted text, in UTF-8 bytes. Larger clipboard contents are
     /// skipped, never truncated: a silently cut-off snippet would be worse
@@ -83,6 +87,60 @@ impl Default for CaptureSettings {
             dedup: DedupMode::default(),
             retention: RetentionPolicy::default(),
         }
+    }
+}
+
+/// Top-level persistent application settings stored in `settings.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppSettings {
+    pub capture: CaptureSettings,
+    pub excluded_apps: Vec<String>,
+    pub autostart: bool,
+    pub hotkey: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            capture: CaptureSettings::default(),
+            excluded_apps: crate::services::capture::DEFAULT_EXCLUDED_APPS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            autostart: false,
+            hotkey: "Ctrl+Shift+Space".to_string(),
+        }
+    }
+}
+
+impl AppSettings {
+    /// Load settings from disk or return default if absent or invalid.
+    pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Self::default();
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|err| {
+                tracing::warn!(%err, "failed to parse settings file; using defaults");
+                Self::default()
+            }),
+            Err(err) => {
+                tracing::warn!(%err, "failed to read settings file; using defaults");
+                Self::default()
+            }
+        }
+    }
+
+    /// Save settings to disk in readable JSON format.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, json)
     }
 }
 
@@ -133,5 +191,20 @@ mod tests {
             max_age: Some(Duration::MAX),
         };
         assert_eq!(huge.age_cutoff(5), Some(5 - i64::MAX));
+    }
+
+    #[test]
+    fn app_settings_json_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("test_settings.json");
+
+        let mut original = AppSettings::default();
+        original.capture.max_entry_bytes = 2 * 1024 * 1024;
+        original.excluded_apps.push("custom_app.exe".into());
+
+        original.save(&path).unwrap();
+
+        let loaded = AppSettings::load_or_default(&path);
+        assert_eq!(loaded, original);
     }
 }
