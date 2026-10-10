@@ -52,6 +52,7 @@ enum Command {
     Report {
         reply: Reply<OpenReport>,
     },
+    Shutdown,
 }
 
 /// A cloneable handle to dispatch commands to the background storage thread.
@@ -152,7 +153,7 @@ impl StorageHandle {
 }
 
 pub struct Storage {
-    handle: StorageHandle,
+    handle: Option<StorageHandle>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -226,7 +227,14 @@ impl Storage {
                         Command::Report { reply } => {
                             let _ = reply.send(repo.report());
                         }
+                        Command::Shutdown => {
+                            break;
+                        }
                     }
+                }
+
+                if let Err(e) = repo.checkpoint() {
+                    tracing::warn!(error = %e, "failed to checkpoint database on shutdown");
                 }
 
                 tracing::debug!("storage worker thread stopped");
@@ -235,7 +243,7 @@ impl Storage {
 
         match init_rx.recv() {
             Ok(Ok(())) => Ok(Self {
-                handle: StorageHandle { tx },
+                handle: Some(StorageHandle { tx }),
                 thread: Some(thread),
             }),
             Ok(Err(err)) => {
@@ -250,17 +258,46 @@ impl Storage {
     }
 
     pub fn handle(&self) -> StorageHandle {
-        self.handle.clone()
+        self.handle
+            .as_ref()
+            .expect("storage worker already stopped")
+            .clone()
+    }
+
+    /// Gracefully shutdown the storage worker, waiting for completion with a timeout.
+    pub fn shutdown(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.tx.try_send(Command::Shutdown);
+        }
+        if let Some(thread) = self.thread.take() {
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsRawHandle;
+                use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+                use windows::Win32::System::Threading::WaitForSingleObject;
+
+                let raw = thread.as_raw_handle();
+                let handle = HANDLE(raw as *mut _);
+                let wait_res = unsafe { WaitForSingleObject(handle, 3000) };
+                if wait_res == WAIT_OBJECT_0 {
+                    let _ = thread.join();
+                } else {
+                    tracing::warn!(
+                        "storage worker thread did not terminate within timeout on shutdown"
+                    );
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = thread.join();
+            }
+        }
     }
 }
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        if let Some(_thread) = self.thread.take() {
-            // Drop our local handle so rx will eventually terminate if no other handles exist
-            drop(self.handle.tx.clone());
-            // We don't block indefinitely on join in drop, but dropping handle triggers rx to close
-        }
+        self.shutdown();
     }
 }
 
@@ -349,5 +386,35 @@ mod tests {
 
         let list_empty = handle.list(HistoryQuery::default()).await.unwrap();
         assert_eq!(list_empty.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn storage_worker_shutdown_checkpoints_and_joins() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("shutdown_test.db");
+
+        let mut storage = Storage::spawn(&db_path).unwrap();
+        let handle = storage.handle();
+
+        let entry = prepare(
+            "Shutdown test text".to_string(),
+            &CaptureSettings::default(),
+            Some("app.exe".to_string()),
+            100,
+        )
+        .unwrap();
+
+        let _ = handle.record(entry, DedupMode::Anywhere).await.unwrap();
+
+        drop(handle);
+        storage.shutdown();
+
+        assert!(storage.thread.is_none());
+        assert!(storage.handle.is_none());
+
+        let repo = Repository::open(&db_path).unwrap();
+        let list = repo.list(&HistoryQuery::default()).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].preview, "Shutdown test text");
     }
 }

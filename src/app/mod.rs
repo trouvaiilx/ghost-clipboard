@@ -117,6 +117,7 @@ pub struct State {
     pub autostart_enabled: bool,
     pub db_path: String,
     pub faults: Vec<(Component, String)>,
+    _storage: Storage,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +237,7 @@ impl State {
             autostart_enabled,
             db_path,
             faults,
+            _storage: storage,
         };
 
         let initial_show = if options.background {
@@ -635,6 +637,7 @@ impl State {
             }
             ShellEvent::Menu(TrayCommand::Exit) => {
                 self.shell.shutdown();
+                self._storage.shutdown();
                 iced::exit()
             }
             ShellEvent::Menu(TrayCommand::OpenSettings) => {
