@@ -440,6 +440,7 @@ impl State {
             }
             Message::PauseToggled(paused) => {
                 self.is_paused = paused;
+                self.shell.set_paused(paused);
                 let msg = if paused {
                     "Clipboard capture paused"
                 } else {

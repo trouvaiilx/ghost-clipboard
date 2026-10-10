@@ -34,6 +34,15 @@ fn in_eye(u: f32, v: f32) -> bool {
 
 /// Render the mark at `size` x `size` pixels.
 pub fn render(size: u32) -> IconRgba {
+    render_styled(size, BODY)
+}
+
+/// Render the mark in a distinct paused state (amber tone) at `size` x `size` pixels.
+pub fn render_paused(size: u32) -> IconRgba {
+    render_styled(size, [0.88, 0.58, 0.20])
+}
+
+fn render_styled(size: u32, body_color: [f32; 3]) -> IconRgba {
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
     let total = (SAMPLES * SAMPLES) as f32;
     for y in 0..size {
@@ -46,7 +55,7 @@ pub fn render(size: u32) -> IconRgba {
                     let colour = if in_eye(u, v) {
                         Some(OUTLINE)
                     } else if in_ghost(u, v, 0.0) {
-                        Some(BODY)
+                        Some(body_color)
                     } else if in_ghost(u, v, 0.045) {
                         Some(OUTLINE)
                     } else {
@@ -92,5 +101,18 @@ mod tests {
         let px = |x: usize, y: usize| &icon.rgba[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4];
         assert_eq!(px(16, 12)[3], 255, "ghost body should be opaque");
         assert_eq!(px(0, 0)[3], 0, "corner should be transparent");
+    }
+
+    #[test]
+    fn renders_paused_icon_buffer_and_distinct_color() {
+        let normal = render(32);
+        let paused = render_paused(32);
+        assert_eq!(paused.rgba.len(), 32 * 32 * 4);
+        let px_normal = &normal.rgba[(12 * 32 + 16) * 4..(12 * 32 + 16) * 4 + 4];
+        let px_paused = &paused.rgba[(12 * 32 + 16) * 4..(12 * 32 + 16) * 4 + 4];
+        assert_ne!(
+            px_normal, px_paused,
+            "paused icon must have distinct colors"
+        );
     }
 }

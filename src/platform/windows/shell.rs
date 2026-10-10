@@ -54,6 +54,8 @@ const EVENT_QUEUE: usize = 64;
 const WM_SHUTDOWN: u32 = WM_APP + 1;
 /// Posted by a secondary instance attempting to launch to activate this existing instance.
 pub const WM_ACTIVATE_INSTANCE: u32 = WM_APP + 2;
+/// Posted to update the tray icon and menu text for paused state.
+pub const WM_SET_PAUSED: u32 = WM_APP + 3;
 /// Identifier of the single global shortcut registered on the shell window.
 const HOTKEY_ID: i32 = 1;
 
@@ -143,6 +145,18 @@ impl Shell {
         self.hwnd
     }
 
+    /// Notify the shell thread to update the tray menu item and tooltip for paused state.
+    pub fn set_paused(&self, paused: bool) {
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(self.hwnd as *mut _)),
+                WM_SET_PAUSED,
+                WPARAM(if paused { 1 } else { 0 }),
+                LPARAM(0),
+            );
+        }
+    }
+
     /// Stop the thread and release the listener, shortcut and tray icon.
     pub fn shutdown(&mut self) {
         if let Some(thread) = self.thread.take() {
@@ -173,9 +187,17 @@ impl Drop for Shell {
 
 // --- shell thread -----------------------------------------------------------
 
+struct TrayState {
+    tray: TrayIcon,
+    pause_item: MenuItem,
+    normal_icon: Icon,
+    paused_icon: Icon,
+}
+
 thread_local! {
     /// Sender used by the window procedure (which cannot capture state).
     static SINK: RefCell<Option<mpsc::Sender<ShellEvent>>> = const { RefCell::new(None) };
+    static TRAY_STATE: RefCell<Option<TrayState>> = const { RefCell::new(None) };
 }
 
 /// Notifications dropped since the last successful delivery.
@@ -230,16 +252,17 @@ fn run(config: ShellConfig, events: mpsc::Sender<ShellEvent>, ready: std_mpsc::S
     }
 
     // The tray icon must be created and dropped on this thread.
-    let tray = match create_tray(events) {
-        Ok(tray) => Some(tray),
+    match create_tray(events) {
+        Ok(state) => {
+            TRAY_STATE.with(|ts| *ts.borrow_mut() = Some(state));
+        }
         Err(message) => {
             faults.push(ShellFault {
                 component: Component::TrayIcon,
                 message,
             });
-            None
         }
-    };
+    }
 
     let _ = ready.send(Ok((hwnd.0 as isize, StartupReport { faults })));
 
@@ -247,7 +270,7 @@ fn run(config: ShellConfig, events: mpsc::Sender<ShellEvent>, ready: std_mpsc::S
 
     // Orderly teardown on the owning thread. The shell window (and with it the
     // clipboard listener and hotkey) was already released in WM_DESTROY.
-    drop(tray);
+    TRAY_STATE.with(|ts| *ts.borrow_mut() = None);
     SINK.with(|sink| *sink.borrow_mut() = None);
     tracing::debug!("native shell thread stopped");
 }
@@ -313,6 +336,23 @@ unsafe extern "system" fn window_proc(
             notify(ShellEvent::HotkeyPressed);
             LRESULT(0)
         }
+        WM_SET_PAUSED => {
+            let paused = wparam.0 != 0;
+            TRAY_STATE.with(|ts| {
+                if let Some(state) = ts.borrow_mut().as_mut() {
+                    if paused {
+                        state.pause_item.set_text("Resume capture");
+                        let _ = state.tray.set_tooltip(Some("GhostClipboard (Paused)"));
+                        let _ = state.tray.set_icon(Some(state.paused_icon.clone()));
+                    } else {
+                        state.pause_item.set_text("Pause capture");
+                        let _ = state.tray.set_tooltip(Some("GhostClipboard"));
+                        let _ = state.tray.set_icon(Some(state.normal_icon.clone()));
+                    }
+                }
+            });
+            LRESULT(0)
+        }
         WM_ACTIVATE_INSTANCE => {
             notify(ShellEvent::HotkeyPressed);
             LRESULT(0)
@@ -371,7 +411,7 @@ fn register_hotkey(hwnd: HWND, hotkey: &Hotkey) -> Result<(), String> {
     })
 }
 
-fn create_tray(events: mpsc::Sender<ShellEvent>) -> Result<TrayIcon, String> {
+fn create_tray(events: mpsc::Sender<ShellEvent>) -> Result<TrayState, String> {
     let menu = Menu::new();
     let open = MenuItem::with_id(ID_OPEN, "Open history", true, None);
     let pause = MenuItem::with_id(ID_PAUSE, "Pause capture", true, None);
@@ -388,7 +428,11 @@ fn create_tray(events: mpsc::Sender<ShellEvent>) -> Result<TrayIcon, String> {
     .map_err(|e| e.to_string())?;
 
     let mark = branding::render(32);
-    let icon = Icon::from_rgba(mark.rgba, mark.size, mark.size).map_err(|e| e.to_string())?;
+    let normal_icon =
+        Icon::from_rgba(mark.rgba, mark.size, mark.size).map_err(|e| e.to_string())?;
+    let mark_paused = branding::render_paused(32);
+    let paused_icon = Icon::from_rgba(mark_paused.rgba, mark_paused.size, mark_paused.size)
+        .map_err(|e| e.to_string())?;
 
     let menu_events = events.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -413,13 +457,20 @@ fn create_tray(events: mpsc::Sender<ShellEvent>) -> Result<TrayIcon, String> {
         }
     }));
 
-    TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .with_tooltip("GhostClipboard")
-        .with_icon(icon)
+        .with_icon(normal_icon.clone())
         .build()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    Ok(TrayState {
+        tray,
+        pause_item: pause,
+        normal_icon,
+        paused_icon,
+    })
 }
 
 #[cfg(test)]
@@ -551,6 +602,7 @@ mod tests {
         let mut shell = spawn();
         let mut events = shell.take_events().expect("receiver available once");
         assert!(shell.take_events().is_none());
+        while events.try_recv().is_ok() {}
 
         post(&shell, WM_HOTKEY, HOTKEY_ID as usize);
         assert_eq!(next_event(&mut events), ShellEvent::HotkeyPressed);
@@ -591,5 +643,13 @@ mod tests {
             other => panic!("expected an overflow report, got {other:?}"),
         }
         assert_eq!(next_event(&mut events), ShellEvent::ClipboardChanged);
+    }
+
+    #[test]
+    fn pause_state_updates_tray() {
+        let _guard = serial();
+        let shell = spawn();
+        shell.set_paused(true);
+        shell.set_paused(false);
     }
 }
