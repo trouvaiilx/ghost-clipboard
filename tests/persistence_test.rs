@@ -175,3 +175,50 @@ fn retention_respects_pinned_entries() {
     assert!(repo.get_text(ids[0]).unwrap().is_some());
     assert!(repo.get_text(ids[1]).unwrap().is_some());
 }
+
+#[test]
+fn secure_delete_and_wal_truncation_on_clear() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("secure_delete_test.db");
+    let wal_path = dir.path().join("secure_delete_test.db-wal");
+
+    let canary = "SENSITIVE_CANARY_TEXT_XYZ_123456789";
+
+    // 1. Insert canary entry
+    {
+        let mut repo = Repository::open(&db_path).expect("open failed");
+        let entry = prepare(canary.to_string(), &CaptureSettings::default(), None, 1_000)
+            .expect("prepare failed");
+        repo.record(entry, DedupMode::Anywhere)
+            .expect("record failed");
+
+        // Clear all entries (which runs secure_delete and wal_checkpoint(TRUNCATE))
+        let deleted = repo.clear_all().expect("clear_all failed");
+        assert_eq!(deleted, 1);
+    }
+
+    // 2. Inspect raw file contents on disk
+    let db_bytes = std::fs::read(&db_path).unwrap_or_default();
+    let wal_bytes = if wal_path.exists() {
+        std::fs::read(&wal_path).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let canary_bytes = canary.as_bytes();
+    let in_db = db_bytes
+        .windows(canary_bytes.len())
+        .any(|w| w == canary_bytes);
+    let in_wal = wal_bytes
+        .windows(canary_bytes.len())
+        .any(|w| w == canary_bytes);
+
+    assert!(
+        !in_db,
+        "secure_delete must overwrite deleted text in the db file with zeroes"
+    );
+    assert!(
+        !in_wal,
+        "wal_checkpoint(TRUNCATE) must remove deleted text from the WAL file"
+    );
+}

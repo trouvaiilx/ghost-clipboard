@@ -7,6 +7,8 @@ use windows::Win32::System::DataExchange::{
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 
+static CLIPBOARD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn opt_out_formats_cached_test() {
     let formats1 = opt_out_formats();
@@ -53,6 +55,7 @@ fn set_clipboard_with_dword_format(text: &str, format: u32, dword_val: u32) -> R
 
 #[test]
 fn clipboard_opt_out_formats_test() {
+    let _lock = CLIPBOARD_TEST_LOCK.lock().unwrap();
     let formats = opt_out_formats();
 
     // 1. CanIncludeInClipboardHistory with DWORD = 0 should be skipped
@@ -85,6 +88,7 @@ fn clipboard_opt_out_formats_test() {
 
 #[test]
 fn clipboard_roundtrip_test() {
+    let _lock = CLIPBOARD_TEST_LOCK.lock().unwrap();
     let test_val = format!(
         "ghost_clipboard_test_{}",
         std::time::SystemTime::now().elapsed().unwrap().as_nanos()

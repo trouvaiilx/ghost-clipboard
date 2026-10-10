@@ -62,6 +62,7 @@ impl Repository {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 3000)?;
+        conn.pragma_update(None, "secure_delete", "ON")?;
 
         migrate(&mut conn)?;
 
@@ -266,17 +267,28 @@ impl Repository {
         Ok(count > 0)
     }
 
+    /// Checkpoint the WAL file and truncate it, ensuring deleted content is cleared from the write-ahead log.
+    pub fn checkpoint(&self) -> Result<()> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
+
     /// Clear all unpinned entries. Returns the number of removed entries.
     pub fn clear_unpinned(&mut self) -> Result<usize> {
         let count = self
             .conn
             .execute("DELETE FROM entries WHERE pinned = 0", [])?;
+        if count > 0 {
+            let _ = self.checkpoint();
+        }
         Ok(count)
     }
 
     /// Clear ALL entries, including pinned. Returns the number of removed entries.
     pub fn clear_all(&mut self) -> Result<usize> {
         let count = self.conn.execute("DELETE FROM entries", [])?;
+        let _ = self.checkpoint();
         Ok(count)
     }
 
@@ -315,6 +327,11 @@ impl Repository {
         }
 
         tx.commit()?;
+
+        if deleted > 0 {
+            let _ = self.checkpoint();
+        }
+
         Ok(deleted)
     }
 
@@ -380,6 +397,16 @@ mod tests {
             copied_at,
         )
         .expect("prepare failed")
+    }
+
+    #[test]
+    fn secure_delete_is_enabled() {
+        let repo = Repository::open_in_memory().expect("open failed");
+        let secure_delete: i32 = repo
+            .conn
+            .pragma_query_value(None, "secure_delete", |row| row.get(0))
+            .expect("pragma query failed");
+        assert_eq!(secure_delete, 1);
     }
 
     #[test]
