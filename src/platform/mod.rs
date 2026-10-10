@@ -143,6 +143,81 @@ pub fn write_clipboard_text(text: &str) -> Result<u32, String> {
 }
 
 #[cfg(windows)]
+pub use windows::clipboard::ClipboardError;
+
+#[cfg(not(windows))]
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum ClipboardError {
+    #[error("clipboard is locked")]
+    Locked,
+    #[error("clipboard format is unavailable")]
+    FormatUnavailable,
+    #[error("clipboard error: {0}")]
+    Other(String),
+}
+
+/// Abstract source of clipboard sequence and text content.
+pub trait ClipboardSource: Send + Sync {
+    /// Return the current sequence number of the clipboard.
+    fn sequence_number(&self) -> u32;
+
+    /// Read plain text up to `max_bytes`.
+    fn read_text(&self, max_bytes: usize) -> Result<Option<String>, ClipboardError>;
+}
+
+/// Abstract probe to query the process that owns or originated clipboard content.
+pub trait ForegroundProbe: Send + Sync {
+    /// Return the executable name of the application that owns or copied to the clipboard.
+    fn source_process_name(&self) -> Option<String>;
+}
+
+/// Default system clipboard implementation.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemClipboard;
+
+impl ClipboardSource for SystemClipboard {
+    fn sequence_number(&self) -> u32 {
+        #[cfg(windows)]
+        {
+            windows::clipboard::sequence_number()
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
+    }
+
+    fn read_text(&self, max_bytes: usize) -> Result<Option<String>, ClipboardError> {
+        #[cfg(windows)]
+        {
+            windows::clipboard::read_text(max_bytes)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = max_bytes;
+            Ok(None)
+        }
+    }
+}
+
+/// Default system foreground probe implementation.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemForeground;
+
+impl ForegroundProbe for SystemForeground {
+    fn source_process_name(&self) -> Option<String> {
+        #[cfg(windows)]
+        {
+            windows::foreground::source_process_name()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
 pub type SingleInstanceGuard = windows::SingleInstance;
 #[cfg(not(windows))]
 pub struct SingleInstanceGuard;
