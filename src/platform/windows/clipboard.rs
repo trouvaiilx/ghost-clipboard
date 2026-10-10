@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 use std::time::Duration;
-use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
     IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
@@ -195,8 +195,8 @@ pub fn read_text(max_bytes: usize) -> Result<Option<String>, ClipboardError> {
     Ok(Some(text))
 }
 
-/// Write text back to the Windows clipboard.
-pub fn write_text(text: &str) -> Result<(), ClipboardError> {
+/// Write text back to the Windows clipboard, returning the resulting sequence number.
+pub fn write_text(text: &str) -> Result<u32, ClipboardError> {
     let _guard = ClipboardGuard::open()?;
 
     unsafe {
@@ -210,6 +210,9 @@ pub fn write_text(text: &str) -> Result<(), ClipboardError> {
 
     let ptr = unsafe { GlobalLock(hmem) };
     if ptr.is_null() {
+        unsafe {
+            let _ = GlobalFree(Some(hmem));
+        }
         return Err(ClipboardError::Locked);
     }
 
@@ -218,10 +221,16 @@ pub fn write_text(text: &str) -> Result<(), ClipboardError> {
         let _ = GlobalUnlock(hmem);
     }
 
-    // When SetClipboardData succeeds, system takes ownership of hmem
-    unsafe {
-        SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hmem.0)))?;
+    // When SetClipboardData succeeds, system takes ownership of hmem.
+    // If it fails, we must free hmem ourselves to avoid leaks.
+    if let Err(err) = unsafe { SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hmem.0))) } {
+        unsafe {
+            let _ = GlobalFree(Some(hmem));
+        }
+        return Err(ClipboardError::Api(err));
     }
 
-    Ok(())
+    drop(_guard);
+
+    Ok(sequence_number())
 }

@@ -128,8 +128,8 @@ pub fn restore_active_window(handle: isize) {
     }
 }
 
-/// Write text back to the system clipboard.
-pub fn write_clipboard_text(text: &str) -> Result<(), String> {
+/// Write text back to the system clipboard, returning the resulting sequence number.
+pub fn write_clipboard_text(text: &str) -> Result<u32, String> {
     #[cfg(windows)]
     {
         windows::clipboard::write_text(text).map_err(|e| e.to_string())
@@ -137,7 +137,7 @@ pub fn write_clipboard_text(text: &str) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = text;
-        Ok(())
+        Ok(0)
     }
 }
 

@@ -83,6 +83,13 @@ impl CaptureService {
         self.last_sequence
     }
 
+    /// Explicitly register a sequence number to ignore (e.g. from copy-back operations).
+    pub fn ignore_sequence(&mut self, seq: u32) {
+        if seq != 0 {
+            self.last_sequence = seq;
+        }
+    }
+
     /// Process a clipboard change notification.
     ///
     /// Returns `Ok(Some(outcome))` if an entry was recorded,
@@ -206,6 +213,8 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
 
+    static CLIPBOARD_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn test_capture_service_pause_and_exclusions() {
         let storage = Storage::spawn_in_memory().unwrap();
@@ -230,6 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_capture_service_sequence_advance_on_record() {
+        let _lock = CLIPBOARD_TEST_MUTEX.lock().await;
         let storage = Storage::spawn_in_memory().unwrap();
         let mut service = CaptureService::new(storage.handle(), CaptureSettings::default());
 
@@ -253,6 +263,29 @@ mod tests {
             // Redundant call with unchanged sequence should be skipped immediately
             let redundant = service.on_clipboard_changed().await.unwrap();
             assert_eq!(redundant, None, "redundant sequence must be skipped");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_copy_back_sequence_ignored_prevents_recapture() {
+        let _lock = CLIPBOARD_TEST_MUTEX.lock().await;
+        let storage = Storage::spawn_in_memory().unwrap();
+        let mut service = CaptureService::new(storage.handle(), CaptureSettings::default());
+
+        let canary = format!(
+            "copy_back_test_{}",
+            std::time::SystemTime::now().elapsed().unwrap().as_nanos()
+        );
+        if let Ok(seq) = clipboard::write_text(&canary) {
+            // Emulate copy-back: tell service to ignore this sequence
+            service.ignore_sequence(seq);
+
+            // Clipboard change notification fires
+            let outcome = service.on_clipboard_changed().await.unwrap();
+            assert_eq!(
+                outcome, None,
+                "copy-back sequence must be ignored and not re-captured"
+            );
         }
     }
 }

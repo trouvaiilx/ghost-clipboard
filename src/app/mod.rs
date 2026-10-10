@@ -792,6 +792,7 @@ impl State {
 
     fn perform_copy(&mut self, id: EntryId) -> Task<Message> {
         let storage = self.storage.clone();
+        let capture = self.capture.clone();
         let previous_window = self.previous_window.take();
 
         let hide_task = self.hide();
@@ -804,7 +805,11 @@ impl State {
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| "Entry not found".to_string())?;
 
-                platform::write_clipboard_text(&text)?;
+                let seq = platform::write_clipboard_text(&text)?;
+                {
+                    let mut cap = capture.lock().await;
+                    cap.ignore_sequence(seq);
+                }
 
                 if let Some(handle) = previous_window {
                     platform::restore_active_window(handle);

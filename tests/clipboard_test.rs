@@ -96,15 +96,24 @@ fn clipboard_roundtrip_test() {
     let before_seq = sequence_number();
 
     // Write to clipboard
-    if let Err(e) = write_text(&test_val) {
-        eprintln!("Skipping clipboard roundtrip test (cannot open clipboard in this session): {e}");
-        return;
-    }
+    let res_seq = match write_text(&test_val) {
+        Ok(seq) => seq,
+        Err(e) => {
+            eprintln!(
+                "Skipping clipboard roundtrip test (cannot open clipboard in this session): {e}"
+            );
+            return;
+        }
+    };
 
     let after_seq = sequence_number();
     assert_ne!(
         before_seq, after_seq,
         "sequence number must change after write"
+    );
+    assert_eq!(
+        res_seq, after_seq,
+        "write_text must return the resulting sequence number"
     );
 
     // Read back
