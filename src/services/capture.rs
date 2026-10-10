@@ -100,7 +100,7 @@ impl CaptureService {
         }
         self.last_sequence = seq;
 
-        let source_app = foreground::foreground_process_name();
+        let source_app = foreground::source_process_name();
         if let Some(ref app) = source_app {
             let app_lower = app.to_ascii_lowercase();
             if self

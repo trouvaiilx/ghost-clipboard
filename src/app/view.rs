@@ -7,9 +7,7 @@ use iced::{Element, Length};
 
 use crate::app::theme::{self, ACCENT_AMBER, ACCENT_BLUE, ACCENT_GREEN, ACCENT_RED, TEXT_MUTED};
 use crate::app::time;
-use crate::app::{
-    EntryFilter, Message, HISTORY_SCROLL_ID, SEARCH_INPUT_ID, State, ViewTab,
-};
+use crate::app::{EntryFilter, HISTORY_SCROLL_ID, Message, SEARCH_INPUT_ID, State, ViewTab};
 use crate::domain::entry::{ContentKind, EntrySummary};
 use crate::domain::settings::DedupMode;
 

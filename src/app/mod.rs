@@ -680,7 +680,8 @@ impl State {
                 keyboard::Key::Named(keyboard::key::Named::Delete) => {
                     // Plain Delete only deletes an entry if the search query is empty or with modifiers,
                     // preventing accidental entry deletion during inline search text editing.
-                    let can_delete = modifiers.shift() || modifiers.control() || self.search_query.is_empty();
+                    let can_delete =
+                        modifiers.shift() || modifiers.control() || self.search_query.is_empty();
                     if let Some(entry) = self.selected_entry().filter(|_| can_delete) {
                         let id = entry.id;
                         return self.update(Message::DeleteEntry(id));

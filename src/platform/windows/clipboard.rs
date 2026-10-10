@@ -3,18 +3,67 @@
 //! Provides bounded retries for reading and writing text, automatic RAII
 //! clipboard release, format validation, and sequence number tracking.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
     IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
-use windows::core::w;
 use windows::Win32::System::Memory::{
     GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
+use windows::core::w;
 
 pub const CF_UNICODETEXT: u32 = 13;
+
+#[derive(Debug, Clone, Copy)]
+pub struct OptOutFormats {
+    pub viewer_ignore: u32,
+    pub exclude_monitor: u32,
+    pub can_include_history: u32,
+    pub can_upload_cloud: u32,
+}
+
+static OPT_OUT_FORMATS: OnceLock<OptOutFormats> = OnceLock::new();
+
+/// Cached registered clipboard format IDs for privacy and opt-out handling.
+pub fn opt_out_formats() -> &'static OptOutFormats {
+    OPT_OUT_FORMATS.get_or_init(|| unsafe {
+        OptOutFormats {
+            viewer_ignore: RegisterClipboardFormatW(w!("Clipboard Viewer Ignore")),
+            exclude_monitor: RegisterClipboardFormatW(w!(
+                "ExcludeClipboardContentFromMonitorProcessing"
+            )),
+            can_include_history: RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory")),
+            can_upload_cloud: RegisterClipboardFormatW(w!("CanUploadToCloudClipboard")),
+        }
+    })
+}
+
+unsafe fn read_clipboard_dword(format: u32) -> Option<u32> {
+    if format == 0 {
+        return None;
+    }
+    unsafe {
+        let handle = GetClipboardData(format).ok()?;
+        if handle.is_invalid() || handle.0.is_null() {
+            return None;
+        }
+        let hglobal = HGLOBAL(handle.0);
+        let size = GlobalSize(hglobal);
+        if size < std::mem::size_of::<u32>() {
+            return None;
+        }
+        let ptr = GlobalLock(hglobal);
+        if ptr.is_null() {
+            return None;
+        }
+        let val = std::ptr::read_unaligned(ptr as *const u32);
+        let _ = GlobalUnlock(hglobal);
+        Some(val)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
@@ -68,13 +117,13 @@ pub fn sequence_number() -> u32 {
 /// Returns `Ok(None)` if the clipboard does not currently contain `CF_UNICODETEXT`.
 /// Large payloads exceeding `max_bytes` return `Ok(None)` without allocating huge buffers.
 pub fn read_text(max_bytes: usize) -> Result<Option<String>, ClipboardError> {
-    // Respect Windows standard privacy formats used by password managers and extensions
-    let ignore_fmt = unsafe { RegisterClipboardFormatW(w!("Clipboard Viewer Ignore")) };
-    let exclude_fmt =
-        unsafe { RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing")) };
+    let formats = opt_out_formats();
 
-    if (ignore_fmt != 0 && unsafe { IsClipboardFormatAvailable(ignore_fmt) }.is_ok())
-        || (exclude_fmt != 0 && unsafe { IsClipboardFormatAvailable(exclude_fmt) }.is_ok())
+    // Respect Windows standard privacy formats where presence alone indicates skipping
+    if (formats.viewer_ignore != 0
+        && unsafe { IsClipboardFormatAvailable(formats.viewer_ignore) }.is_ok())
+        || (formats.exclude_monitor != 0
+            && unsafe { IsClipboardFormatAvailable(formats.exclude_monitor) }.is_ok())
     {
         tracing::debug!("skipping clipboard content marked with Clipboard Viewer Ignore format");
         return Ok(None);
@@ -87,7 +136,25 @@ pub fn read_text(max_bytes: usize) -> Result<Option<String>, ClipboardError> {
 
     let _guard = ClipboardGuard::open()?;
 
+    // Respect Windows formats where DWORD 0 means skip
+    if formats.can_include_history != 0
+        && unsafe { IsClipboardFormatAvailable(formats.can_include_history) }.is_ok()
+        && let Some(0) = unsafe { read_clipboard_dword(formats.can_include_history) }
+    {
+        tracing::debug!("skipping clipboard content marked with CanIncludeInClipboardHistory = 0");
+        return Ok(None);
+    }
+
+    if formats.can_upload_cloud != 0
+        && unsafe { IsClipboardFormatAvailable(formats.can_upload_cloud) }.is_ok()
+        && let Some(0) = unsafe { read_clipboard_dword(formats.can_upload_cloud) }
+    {
+        tracing::debug!("skipping clipboard content marked with CanUploadToCloudClipboard = 0");
+        return Ok(None);
+    }
+
     let handle: HANDLE = unsafe { GetClipboardData(CF_UNICODETEXT) }?;
+
     if handle.is_invalid() {
         return Ok(None);
     }
