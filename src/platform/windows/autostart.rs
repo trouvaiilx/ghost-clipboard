@@ -72,7 +72,13 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
         }
 
         if enabled {
-            let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let current_exe = match std::env::current_exe() {
+                Ok(exe) => exe,
+                Err(e) => {
+                    let _ = RegCloseKey(hkey);
+                    return Err(e.to_string());
+                }
+            };
             let exe_str = current_exe.to_string_lossy().to_string();
             let command = format!("\"{exe_str}\" --background");
 
@@ -85,7 +91,8 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
             let _ = RegCloseKey(hkey);
 
             if set_res == ERROR_SUCCESS {
-                tracing::info!(%command, "enabled launch-at-login in Windows registry");
+                tracing::info!("enabled launch-at-login in Windows registry");
+                tracing::debug!(%command, "configured autostart command line");
                 Ok(())
             } else {
                 Err(format!(

@@ -31,7 +31,8 @@ serde_json = "1"
 
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi", "registry"] }
+tracing-appender = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

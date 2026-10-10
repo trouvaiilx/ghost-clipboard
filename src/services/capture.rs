@@ -118,7 +118,7 @@ impl CaptureService {
                 .iter()
                 .any(|excluded| excluded == &app_lower)
             {
-                tracing::info!(source_app = %app, "ignoring clipboard change from excluded application");
+                tracing::debug!(source_app = %app, "ignoring clipboard change from excluded application");
                 if seq != 0 {
                     self.last_sequence = seq;
                 }

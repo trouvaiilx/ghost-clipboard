@@ -6,16 +6,11 @@ use ghost_clipboard::platform::Hotkey;
 use ghost_clipboard::platform::windows::{Shell, ShellConfig};
 use ghost_clipboard::storage::{Storage, default_db_path};
 
-use tracing_subscriber::EnvFilter;
-
 fn main() {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("ghost_clipboard=info")),
-        )
-        .init();
+    let logs_dir = ghost_clipboard::storage::default_data_dir()
+        .map(|d| d.join("logs"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("logs"));
+    let _ = ghost_clipboard::logging::init_logging(&logs_dir);
 
     let _single_instance = match ghost_clipboard::platform::acquire_single_instance() {
         Ok(Some(guard)) => Some(guard),
