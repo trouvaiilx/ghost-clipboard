@@ -24,6 +24,7 @@ pub const DEFAULT_EXCLUDED_APPS: &[&str] = &[
     "dashlane.exe",
     "nordpass.exe",
     "roboform.exe",
+    "lastpass.exe",
 ];
 
 pub struct CaptureService<C = SystemClipboard, F = SystemForeground> {
@@ -348,6 +349,11 @@ mod tests {
             service
                 .excluded_apps()
                 .contains(&"roboform.exe".to_string())
+        );
+        assert!(
+            service
+                .excluded_apps()
+                .contains(&"lastpass.exe".to_string())
         );
     }
 

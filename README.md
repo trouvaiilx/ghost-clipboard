@@ -144,9 +144,9 @@ For comprehensive details regarding Win32 API interactions, locking strategies, 
 * **Network Isolation:** GhostClipboard contains no networking code or telemetry libraries. All processing and persistence are strictly local.
 * **Log Sanitization:** Diagnostic logging configured via `tracing` records execution flow, character lengths, and error statuses. Raw clipboard text and preview strings are never output to logs or terminal streams.
 * **Process Exclusion:**
-  * Default exclusions: `1Password.exe`, `KeePass.exe`, `Bitwarden.exe`, `KeePassXC.exe`, `Enpass.exe`, `LastPass.exe`, and `Dashlane.exe`.
+  * Default exclusions: `1Password.exe`, `1Password7.exe`, `KeePass.exe`, `KeePassXC.exe`, `Bitwarden.exe`, `Enpass.exe`, `Dashlane.exe`, `NordPass.exe`, `RoboForm.exe`, and `LastPass.exe`.
   * Custom executable names can be added or removed in the Settings panel.
-  * *Note on attribution:* Process identification checks the active foreground window at notification time (`GetForegroundWindow`). Extremely rapid application switching during a copy operation may occasionally attribute the copy to the incoming foreground window.
+  * *Note on attribution:* Process identification queries `GetClipboardOwner` first to avoid race conditions with rapid application switching, falling back to the active foreground window.
 
 ---
 
@@ -154,7 +154,7 @@ For comprehensive details regarding Win32 API interactions, locking strategies, 
 
 Settings can be managed through the built-in Settings tab and are persisted to `%APPDATA%\GhostClipboard\settings.json`:
 
-* **Maximum Entry Size:** Selectable threshold (512 KB, 1 MB, 2 MB, 5 MB, or 10 MB). Entries exceeding this limit are ignored to prevent excessive memory consumption.
+* **Maximum Entry Size:** Selectable threshold (512 KB, 1 MB, 2 MB, 5 MB, or 10 MB; default 1 MB). Entries exceeding this limit are ignored to prevent excessive memory consumption.
 * **Deduplication Mode:**
   * `Anywhere`: Copies matching an existing entry update its timestamp and move it to the top.
   * `Latest Only`: Only deduplicates if the new copy is identical to the most recent entry.
@@ -170,7 +170,7 @@ Settings can be managed through the built-in Settings tab and are persisted to `
 ### Prerequisites
 
 * Windows 11 (64-bit)
-* Rust toolchain (stable 1.80 or newer with MSVC target):
+* Rust toolchain (stable 1.90 or newer, edition 2024 with MSVC target):
   ```powershell
   rustup default stable-x86_64-pc-windows-msvc
   ```
@@ -179,7 +179,7 @@ Settings can be managed through the built-in Settings tab and are persisted to `
 
 ```powershell
 # Clone the repository
-git clone https://github.com/Yuuji/ghost-clipboard.git
+git clone https://github.com/trouvaiilx/ghost-clipboard.git
 cd ghost-clipboard
 
 # Run test suite
