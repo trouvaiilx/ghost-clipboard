@@ -210,6 +210,19 @@ pub fn show_confirm_dialog(title: &str, message: &str) -> bool {
     }
 }
 
+/// Open a URL in the user's default browser.
+pub fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        windows::open_url(url)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

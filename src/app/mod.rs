@@ -156,7 +156,8 @@ pub enum Message {
     SwitchTab(ViewTab),
     KeyboardEvent(keyboard::Event),
     DismissFeedback,
-    OpenUrl(String),
+    OpenUrl(EntryId),
+    UrlOpened(Result<(), String>),
     ToggleCloseOnBlur,
     LoadMoreEntries,
 
@@ -488,11 +489,33 @@ impl State {
                 self.persist_settings();
                 Task::none()
             }
-            Message::OpenUrl(url) => {
-                let _ = std::process::Command::new("rundll32.exe")
-                    .args(["url.dll,FileProtocolHandler", &url])
-                    .spawn();
+            Message::OpenUrl(id) => {
+                let storage = self.storage.clone();
+                Task::perform(
+                    async move {
+                        let text = storage
+                            .get_text(id)
+                            .await
+                            .map_err(|e| e.to_string())?
+                            .ok_or_else(|| "Entry not found".to_string())?;
+
+                        let trimmed = text.trim();
+                        if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+                            return Err(
+                                "Invalid URL: must start with http:// or https://".to_string()
+                            );
+                        }
+
+                        platform::open_url(trimmed)
+                    },
+                    Message::UrlOpened,
+                )
+            }
+            Message::UrlOpened(Ok(())) => {
                 self.set_status_feedback("Opening link in browser...".to_string(), false)
+            }
+            Message::UrlOpened(Err(err)) => {
+                self.set_status_feedback(format!("Could not open link: {err}"), true)
             }
             Message::ToggleCloseOnBlur => {
                 self.app_settings.close_on_blur = !self.app_settings.close_on_blur;

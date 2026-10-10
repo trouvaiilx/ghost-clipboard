@@ -299,3 +299,54 @@ async fn test_settings_keyboard_isolation_and_tab_switching() {
     let _ = state.update(Message::KeyboardEvent(ctrl_1_event));
     assert_eq!(state.active_tab, ViewTab::History);
 }
+
+#[tokio::test]
+async fn test_open_url_flow_and_validation() {
+    let storage = Storage::spawn_in_memory().expect("spawn in-memory storage");
+    let handle = storage.handle();
+    let shell = create_test_shell();
+
+    let (mut state, _) = State::new(shell, storage, Options::default(), "in-memory".into());
+
+    // Record a long URL exceeding 400 characters
+    let long_url = format!("https://example.com/search?query={}", "a".repeat(450));
+    let entry = ghost_clipboard::domain::capture::prepare(
+        long_url.clone(),
+        &ghost_clipboard::domain::settings::CaptureSettings::default(),
+        None,
+        1_000,
+    )
+    .unwrap();
+    let outcome = handle
+        .record(
+            entry,
+            ghost_clipboard::domain::settings::DedupMode::Anywhere,
+        )
+        .await
+        .unwrap();
+    let id = match outcome {
+        ghost_clipboard::storage::RecordOutcome::Inserted(id) => id,
+        _ => panic!(),
+    };
+
+    // Trigger Message::OpenUrl(id)
+    let _ = state.update(Message::OpenUrl(id));
+    // Verify handling UrlOpened success
+    let _ = state.update(Message::UrlOpened(Ok(())));
+    assert_eq!(
+        state.status_feedback,
+        Some(("Opening link in browser...".to_string(), false))
+    );
+
+    // Verify error feedback
+    let _ = state.update(Message::UrlOpened(Err(
+        "Invalid URL: must start with http:// or https://".to_string(),
+    )));
+    assert_eq!(
+        state.status_feedback,
+        Some((
+            "Could not open link: Invalid URL: must start with http:// or https://".to_string(),
+            true
+        ))
+    );
+}

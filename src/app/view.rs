@@ -424,7 +424,7 @@ fn render_detail_pane<'a>(state: &'a State) -> Element<'a, Message> {
     if entry.kind == ContentKind::Url {
         action_bar = action_bar.push(
             button(text("Open Link").size(12))
-                .on_press(Message::OpenUrl(entry.preview.clone()))
+                .on_press(Message::OpenUrl(entry_id))
                 .style(theme::subtle_button)
                 .padding([4, 10]),
         );
