@@ -38,6 +38,31 @@ pub struct Repository {
     conn: Connection,
 }
 
+use rusqlite::functions::FunctionFlags;
+
+/// Unicode-aware case folding for search.
+///
+/// Converts characters to lowercase while handling Turkish dotted/dotless I,
+/// Cyrillic, and accented characters.
+pub fn unicode_fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'İ' => out.push('i'),
+            'ı' => out.push('i'),
+            'I' => out.push('i'),
+            other => {
+                for lc in other.to_lowercase() {
+                    if lc != '\u{0307}' {
+                        out.push(lc);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 impl Repository {
     /// Open or create a database file at the given path.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -63,6 +88,16 @@ impl Repository {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 3000)?;
         conn.pragma_update(None, "secure_delete", "ON")?;
+
+        conn.create_scalar_function(
+            "unicode_fold",
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                let text: Option<String> = ctx.get(0)?;
+                Ok(text.map(|t| unicode_fold(&t)))
+            },
+        )?;
 
         migrate(&mut conn)?;
 
@@ -178,9 +213,10 @@ impl Repository {
         if let Some(ref term) = query.search_term {
             let term = term.trim();
             if !term.is_empty() {
-                // Case-insensitive substring search in SQLite using LIKE
-                // We escape special LIKE characters (% and _)
-                let escaped = term
+                // Unicode-aware case-insensitive substring search using unicode_fold.
+                // We fold the search term and escape special LIKE characters (% and _).
+                let folded = unicode_fold(term);
+                let escaped = folded
                     .replace('\\', "\\\\")
                     .replace('%', "\\%")
                     .replace('_', "\\_");
@@ -190,7 +226,7 @@ impl Repository {
                     r#"
                     SELECT id, preview, char_count, content_type, copied_at, pinned, source_app
                     FROM entries
-                    WHERE text LIKE ?1 ESCAPE '\'
+                    WHERE unicode_fold(text) LIKE ?1 ESCAPE '\'
                     ORDER BY pinned DESC, copied_at DESC, id DESC
                     LIMIT ?2 OFFSET ?3
                     "#,
@@ -619,5 +655,92 @@ mod tests {
         };
         let results = repo.list(&q).unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_unicode_case_insensitive() {
+        let mut repo = Repository::open_in_memory().unwrap();
+        // 1. Accented Latin (é/É)
+        repo.record(sample_entry("Un café délicieux", 1000), DedupMode::Anywhere)
+            .unwrap();
+        // 2. Cyrillic (Привет / ПРИВЕТ)
+        repo.record(sample_entry("Привет, мир!", 2000), DedupMode::Anywhere)
+            .unwrap();
+        // 3. Turkish dotted/dotless I (İ/i and I/ı)
+        repo.record(sample_entry("İstanbul Boğazı", 3000), DedupMode::Anywhere)
+            .unwrap();
+        repo.record(sample_entry("ılık bir ışık", 4000), DedupMode::Anywhere)
+            .unwrap();
+
+        // Query with uppercase accented É
+        let q_accent = HistoryQuery {
+            search_term: Some("CAFÉ".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        let res = repo.list(&q_accent).unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].preview, "Un café délicieux");
+
+        // Query with lowercase accented é
+        let q_accent_lower = HistoryQuery {
+            search_term: Some("délicieux".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        assert_eq!(repo.list(&q_accent_lower).unwrap().len(), 1);
+
+        // Query Cyrillic uppercase
+        let q_cyrillic_upper = HistoryQuery {
+            search_term: Some("ПРИВЕТ".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        let res_cyr = repo.list(&q_cyrillic_upper).unwrap();
+        assert_eq!(res_cyr.len(), 1);
+        assert_eq!(res_cyr[0].preview, "Привет, мир!");
+
+        // Query Cyrillic lowercase
+        let q_cyrillic_lower = HistoryQuery {
+            search_term: Some("привет".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        assert_eq!(repo.list(&q_cyrillic_lower).unwrap().len(), 1);
+
+        // Query Turkish dotted I: search with lowercase i or uppercase İ
+        let q_tr_dotted_lower = HistoryQuery {
+            search_term: Some("istanbul".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        let res_tr1 = repo.list(&q_tr_dotted_lower).unwrap();
+        assert_eq!(res_tr1.len(), 1);
+        assert_eq!(res_tr1[0].preview, "İstanbul Boğazı");
+
+        let q_tr_dotted_upper = HistoryQuery {
+            search_term: Some("İSTANBUL".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        assert_eq!(repo.list(&q_tr_dotted_upper).unwrap().len(), 1);
+
+        // Query Turkish dotless I: search with uppercase I for text with ı
+        let q_tr_dotless_upper = HistoryQuery {
+            search_term: Some("IŞIK".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        let res_tr2 = repo.list(&q_tr_dotless_upper).unwrap();
+        assert_eq!(res_tr2.len(), 1);
+        assert_eq!(res_tr2[0].preview, "ılık bir ışık");
+
+        // Query with lowercase dotless ı
+        let q_tr_dotless_lower = HistoryQuery {
+            search_term: Some("ılık".to_string()),
+            limit: 10,
+            offset: 0,
+        };
+        assert_eq!(repo.list(&q_tr_dotless_lower).unwrap().len(), 1);
     }
 }
