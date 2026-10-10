@@ -132,12 +132,16 @@ impl CaptureService {
 
         let mut raw_text_opt = None;
         for attempt in 0..CAPTURE_RETRIES {
-            match clipboard::read_text(self.settings.max_entry_bytes) {
-                Ok(text_opt) => {
+            let max_bytes = self.settings.max_entry_bytes;
+            let read_res =
+                tokio::task::spawn_blocking(move || clipboard::read_text(max_bytes)).await;
+
+            match read_res {
+                Ok(Ok(text_opt)) => {
                     raw_text_opt = Some(text_opt);
                     break;
                 }
-                Err(clipboard::ClipboardError::Locked) => {
+                Ok(Err(clipboard::ClipboardError::Locked)) => {
                     if attempt + 1 < CAPTURE_RETRIES {
                         tokio::time::sleep(RETRY_DELAY).await;
                     } else {
@@ -148,8 +152,16 @@ impl CaptureService {
                         return Ok(None);
                     }
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     tracing::debug!(%err, seq, "clipboard read failed; not advancing sequence");
+                    return Ok(None);
+                }
+                Err(join_err) => {
+                    tracing::debug!(
+                        %join_err,
+                        seq,
+                        "clipboard read spawn_blocking failed; not advancing sequence"
+                    );
                     return Ok(None);
                 }
             }

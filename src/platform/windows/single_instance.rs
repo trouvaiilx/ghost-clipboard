@@ -8,10 +8,10 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, WPARAM,
 };
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, HWND_MESSAGE, PostMessageW, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, HWND_MESSAGE, PostMessageW};
 use windows::core::w;
 
-pub const WM_ACTIVATE_INSTANCE: u32 = WM_APP + 2;
+pub use super::shell::WM_ACTIVATE_INSTANCE;
 
 /// RAII guard holding the single-instance mutex.
 /// Releasing or dropping this struct releases the mutex.

@@ -33,6 +33,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi", "registry"] }
 tracing-appender = "0.2"
+unicode-segmentation = "1.12"
 
 [dev-dependencies]
 tempfile = "3"

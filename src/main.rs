@@ -19,8 +19,14 @@ fn main() {
             return;
         }
         Err(error) => {
-            tracing::warn!(%error, "could not acquire single-instance mutex; proceeding anyway");
-            None
+            tracing::error!(%error, "failed to check single-instance status");
+            ghost_clipboard::platform::show_error_dialog(
+                "GhostClipboard - Startup Error",
+                &format!(
+                    "Could not verify single-instance status: {error}\nGhostClipboard will exit to prevent data conflicts."
+                ),
+            );
+            std::process::exit(1);
         }
     };
 

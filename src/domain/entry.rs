@@ -103,9 +103,13 @@ pub struct Entry {
     pub text: String,
 }
 
+use unicode_segmentation::UnicodeSegmentation;
+
 /// Build the bounded list preview for `text`, returning whether it was cut.
+/// Uses extended grapheme clusters to ensure combining marks and emoji ZWJ sequences
+/// are never severed across preview boundaries.
 pub fn preview_of(text: &str) -> (String, bool) {
-    match text.char_indices().nth(PREVIEW_CHARS) {
+    match text.grapheme_indices(true).nth(PREVIEW_CHARS) {
         Some((byte_index, _)) => (text[..byte_index].to_owned(), true),
         None => (text.to_owned(), false),
     }
@@ -174,9 +178,27 @@ mod tests {
         let text = "é".repeat(PREVIEW_CHARS + 10);
         let (preview, truncated) = preview_of(&text);
         assert!(truncated);
-        assert_eq!(preview.chars().count(), PREVIEW_CHARS);
+        assert_eq!(preview.graphemes(true).count(), PREVIEW_CHARS);
 
         let exact = "x".repeat(PREVIEW_CHARS);
         assert!(!preview_of(&exact).1, "exactly the limit is not truncated");
+    }
+
+    #[test]
+    fn preview_preserves_emoji_zwj_and_combining_marks() {
+        let family = "👨‍👩‍👧‍👦"; // 7 chars, 1 grapheme cluster
+        let text = family.repeat(PREVIEW_CHARS + 5);
+        let (preview, truncated) = preview_of(&text);
+        assert!(truncated);
+        assert_eq!(preview.graphemes(true).count(), PREVIEW_CHARS);
+        // Verify no severed ZWJ or partial sequence at the end
+        assert!(preview.ends_with(family));
+
+        let combining = "e\u{0301}"; // 'é' as 2 code points, 1 grapheme cluster
+        let text_combining = combining.repeat(PREVIEW_CHARS + 5);
+        let (preview_combining, truncated_combining) = preview_of(&text_combining);
+        assert!(truncated_combining);
+        assert_eq!(preview_combining.graphemes(true).count(), PREVIEW_CHARS);
+        assert!(preview_combining.ends_with(combining));
     }
 }
