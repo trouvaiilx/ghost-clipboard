@@ -185,6 +185,31 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
     }
 }
 
+/// Display a modal native error dialog for fatal errors.
+pub fn show_error_dialog(title: &str, message: &str) {
+    #[cfg(windows)]
+    {
+        windows::dialog::show_error_dialog(title, message);
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("{title}: {message}");
+    }
+}
+
+/// Display a modal native confirmation (Yes/No) dialog.
+pub fn show_confirm_dialog(title: &str, message: &str) -> bool {
+    #[cfg(windows)]
+    {
+        windows::dialog::show_confirm_dialog(title, message)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (title, message);
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

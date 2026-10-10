@@ -42,6 +42,10 @@ fn main() {
         Ok(shell) => shell,
         Err(error) => {
             tracing::error!(%error, "failed to start the native shell");
+            ghost_clipboard::platform::show_error_dialog(
+                "GhostClipboard - Startup Error",
+                &format!("Failed to start the native shell: {error}"),
+            );
             std::process::exit(1);
         }
     };
@@ -50,20 +54,74 @@ fn main() {
         Ok(p) => p,
         Err(error) => {
             tracing::error!(%error, "failed to determine application data path");
+            ghost_clipboard::platform::show_error_dialog(
+                "GhostClipboard - Startup Error",
+                &format!("Failed to determine application data path: {error}"),
+            );
             std::process::exit(1);
         }
     };
 
-    let storage = match Storage::spawn(db_path) {
+    let storage = match Storage::spawn(db_path.clone()) {
         Ok(storage) => storage,
+        Err(ghost_clipboard::storage::StorageError::Corrupt(err)) => {
+            tracing::error!(%err, "history database corrupted");
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let file_name = db_path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("history.db");
+            let corrupt_name = format!("{file_name}.corrupt-{timestamp}");
+            let msg = format!(
+                "The history database is damaged and could not be read:\n\n{err}\n\nWould you like to rename the corrupt database to '{corrupt_name}' and start fresh?"
+            );
+            if ghost_clipboard::platform::show_confirm_dialog(
+                "GhostClipboard - Database Corrupt",
+                &msg,
+            ) {
+                if let Err(e) = ghost_clipboard::storage::rename_corrupt_db(&db_path, timestamp) {
+                    ghost_clipboard::platform::show_error_dialog(
+                        "GhostClipboard - Recovery Failed",
+                        &format!("Failed to rename corrupt database: {e}"),
+                    );
+                    std::process::exit(1);
+                }
+                match Storage::spawn(db_path) {
+                    Ok(fresh_storage) => {
+                        tracing::info!("started fresh database after corruption recovery");
+                        fresh_storage
+                    }
+                    Err(second_err) => {
+                        ghost_clipboard::platform::show_error_dialog(
+                            "GhostClipboard - Fatal Startup Error",
+                            &format!("Failed to create new history database: {second_err}"),
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                std::process::exit(1);
+            }
+        }
         Err(error) => {
             tracing::error!(%error, "failed to initialize SQLite storage");
+            ghost_clipboard::platform::show_error_dialog(
+                "GhostClipboard - Storage Error",
+                &format!("Failed to initialize database: {error}"),
+            );
             std::process::exit(1);
         }
     };
 
     if let Err(error) = app::run(shell, storage, options) {
         tracing::error!(%error, "the user interface stopped unexpectedly");
+        ghost_clipboard::platform::show_error_dialog(
+            "GhostClipboard - Error",
+            &format!("The user interface stopped unexpectedly: {error}"),
+        );
         std::process::exit(1);
     }
 }

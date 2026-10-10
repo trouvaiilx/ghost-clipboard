@@ -222,3 +222,41 @@ fn secure_delete_and_wal_truncation_on_clear() {
         "wal_checkpoint(TRUNCATE) must remove deleted text from the WAL file"
     );
 }
+
+#[tokio::test]
+async fn test_corrupt_database_detection_and_recovery() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("corrupt_test.db");
+
+    // 1. Write corrupted content into the database file
+    std::fs::write(&db_path, b"NOT A VALID SQLITE DATABASE FILE HEADER!!!").unwrap();
+
+    // 2. Spawn Storage should detect corruption and return StorageError::Corrupt
+    let spawn_res = ghost_clipboard::storage::Storage::spawn(&db_path);
+    assert!(
+        matches!(
+            spawn_res,
+            Err(ghost_clipboard::storage::StorageError::Corrupt(_))
+        ),
+        "corrupted file must return StorageError::Corrupt"
+    );
+
+    // 3. Rename corrupt file using helper
+    let timestamp = 1700000000;
+    let corrupt_path = ghost_clipboard::storage::rename_corrupt_db(&db_path, timestamp).unwrap();
+    assert!(!db_path.exists(), "original db path must be moved");
+    assert!(
+        corrupt_path.exists(),
+        "backup file with corrupt prefix must exist"
+    );
+
+    // 4. Starting fresh database at original path should now succeed
+    let storage =
+        ghost_clipboard::storage::Storage::spawn(&db_path).expect("fresh spawn must succeed");
+    let report = storage
+        .handle()
+        .report()
+        .await
+        .expect("fresh storage report must work");
+    assert_eq!(report.total_entries, 0);
+}

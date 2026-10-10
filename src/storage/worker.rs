@@ -280,6 +280,30 @@ pub fn default_db_path() -> Result<PathBuf> {
     Ok(default_data_dir()?.join("history.db"))
 }
 
+/// Helper to handle corrupt database recovery: renames `db_path` to `<filename>.corrupt-<timestamp>` and any WAL/SHM files.
+pub fn rename_corrupt_db<P: AsRef<Path>>(db_path: P, timestamp: u64) -> std::io::Result<PathBuf> {
+    let db_path = db_path.as_ref();
+    let file_name = db_path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("history.db");
+    let corrupt_name = format!("{file_name}.corrupt-{timestamp}");
+    let corrupt_path = db_path.with_file_name(&corrupt_name);
+
+    std::fs::rename(db_path, &corrupt_path)?;
+
+    let wal = db_path.with_file_name(format!("{file_name}-wal"));
+    if wal.exists() {
+        let _ = std::fs::rename(&wal, db_path.with_file_name(format!("{corrupt_name}-wal")));
+    }
+    let shm = db_path.with_file_name(format!("{file_name}-shm"));
+    if shm.exists() {
+        let _ = std::fs::remove_file(shm);
+    }
+
+    Ok(corrupt_path)
+}
+
 /// Returns the default path to the settings JSON file.
 pub fn default_settings_path() -> Result<PathBuf> {
     Ok(default_data_dir()?.join("settings.json"))
