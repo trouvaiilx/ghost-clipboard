@@ -350,3 +350,18 @@ async fn test_open_url_flow_and_validation() {
         ))
     );
 }
+
+#[tokio::test]
+async fn test_overflow_event_triggers_clipboard_capture() {
+    let storage = Storage::spawn_in_memory().expect("spawn storage");
+    let shell = create_test_shell();
+    let (mut state, _) = State::new(shell, storage, Options::default(), "in-memory".into());
+
+    assert_eq!(state.clipboard_notifications, 0);
+
+    let _ = state.update(Message::Shell(
+        ghost_clipboard::platform::ShellEvent::Overflow(5),
+    ));
+
+    assert_eq!(state.clipboard_notifications, 1);
+}

@@ -604,23 +604,25 @@ impl State {
         }
     }
 
+    fn trigger_clipboard_capture(&mut self) -> Task<Message> {
+        self.clipboard_notifications += 1;
+        let capture = self.capture.clone();
+        Task::perform(
+            async move {
+                let mut guard = capture.lock().await;
+                guard
+                    .on_clipboard_changed()
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            Message::ClipboardCaptured,
+        )
+    }
+
     fn on_shell_event(&mut self, event: ShellEvent) -> Task<Message> {
         tracing::debug!(?event, "shell event");
         match event {
-            ShellEvent::ClipboardChanged => {
-                self.clipboard_notifications += 1;
-                let capture = self.capture.clone();
-                Task::perform(
-                    async move {
-                        let mut guard = capture.lock().await;
-                        guard
-                            .on_clipboard_changed()
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    Message::ClipboardCaptured,
-                )
-            }
+            ShellEvent::ClipboardChanged => self.trigger_clipboard_capture(),
             ShellEvent::HotkeyPressed => {
                 self.hotkey_presses += 1;
                 self.toggle()
@@ -646,8 +648,11 @@ impl State {
                 self.show()
             }
             ShellEvent::Overflow(dropped) => {
-                tracing::warn!(dropped, "shell events were dropped");
-                Task::none()
+                tracing::warn!(
+                    dropped,
+                    "shell events were dropped; triggering capture for latest clipboard value"
+                );
+                self.trigger_clipboard_capture()
             }
         }
     }
