@@ -107,7 +107,6 @@ pub struct AppSettings {
     pub capture: CaptureSettings,
     pub excluded_apps: Vec<String>,
     pub autostart: bool,
-    pub hotkey: String,
     pub close_on_blur: bool,
 }
 
@@ -121,7 +120,6 @@ impl Default for AppSettings {
                 .map(|s| s.to_string())
                 .collect(),
             autostart: false,
-            hotkey: "Ctrl+Shift+Space".to_string(),
             close_on_blur: true,
         }
     }

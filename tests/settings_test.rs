@@ -85,7 +85,6 @@ fn test_settings_serde_default_and_version_migration() {
     assert!(loaded.excluded_apps.iter().any(|a| a == "roboform.exe"));
     assert_eq!(loaded.version, 1);
     // Missing fields take their defaults rather than causing serde failure
-    assert_eq!(loaded.hotkey, "Ctrl+Shift+Space");
     assert!(loaded.close_on_blur);
     assert_eq!(loaded.capture.max_entry_bytes, 1024 * 1024);
 }

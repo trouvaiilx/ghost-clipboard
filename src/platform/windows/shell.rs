@@ -364,7 +364,7 @@ fn register_hotkey(hwnd: HWND, hotkey: &Hotkey) -> Result<(), String> {
     // SAFETY: `hwnd` is a valid window owned by this thread.
     unsafe { RegisterHotKey(Some(hwnd), HOTKEY_ID, modifiers, hotkey.vk) }.map_err(|error| {
         if error.code() == ERROR_HOTKEY_ALREADY_REGISTERED.to_hresult() {
-            format!("{hotkey} is already used by another application. Choose a different shortcut in Settings.")
+            format!("{hotkey} is already used by another application.")
         } else {
             format!("Windows could not register {hotkey}: {}", error.message())
         }
