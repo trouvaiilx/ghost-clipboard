@@ -17,9 +17,16 @@ pub enum DedupMode {
     LatestOnly,
 }
 
+pub const CURRENT_SETTINGS_VERSION: u32 = 1;
+
+fn default_version() -> u32 {
+    0
+}
+
 /// Limits on how much history is kept. Pinned entries are never removed by
 /// retention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RetentionPolicy {
     /// Keep at most this many *unpinned* entries.
     pub max_entries: Option<usize>,
@@ -63,6 +70,7 @@ pub const MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Everything the capture pipeline needs to decide what to record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CaptureSettings {
     /// Largest accepted text, in UTF-8 bytes. Larger clipboard contents are
     /// skipped, never truncated: a silently cut-off snippet would be worse
@@ -92,22 +100,21 @@ impl Default for CaptureSettings {
 
 /// Top-level persistent application settings stored in `settings.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
+    #[serde(default = "default_version")]
+    pub version: u32,
     pub capture: CaptureSettings,
     pub excluded_apps: Vec<String>,
     pub autostart: bool,
     pub hotkey: String,
-    #[serde(default = "default_true")]
     pub close_on_blur: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            version: CURRENT_SETTINGS_VERSION,
             capture: CaptureSettings::default(),
             excluded_apps: crate::services::capture::DEFAULT_EXCLUDED_APPS
                 .iter()
@@ -123,23 +130,58 @@ impl Default for AppSettings {
 impl AppSettings {
     /// Load settings from disk or return default if absent or invalid.
     pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
+        Self::load_with_notice(path).0
+    }
+
+    /// Load settings from disk and return any user-visible notice (e.g. if the file was corrupted and backed up).
+    pub fn load_with_notice<P: AsRef<Path>>(path: P) -> (Self, Option<String>) {
         let path = path.as_ref();
         if !path.exists() {
-            return Self::default();
+            return (Self::default(), None);
         }
         match std::fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|err| {
-                tracing::warn!(%err, "failed to parse settings file; using defaults");
-                Self::default()
-            }),
+            Ok(content) => match serde_json::from_str::<AppSettings>(&content) {
+                Ok(mut settings) => {
+                    // Migrate from earlier unversioned or older settings by merging newly added default excluded apps
+                    if settings.version < CURRENT_SETTINGS_VERSION {
+                        for default_app in crate::services::capture::DEFAULT_EXCLUDED_APPS {
+                            let lower = default_app.to_ascii_lowercase();
+                            if !settings
+                                .excluded_apps
+                                .iter()
+                                .any(|a| a.to_ascii_lowercase() == lower)
+                            {
+                                settings.excluded_apps.push(default_app.to_string());
+                            }
+                        }
+                        settings.version = CURRENT_SETTINGS_VERSION;
+                    }
+                    (settings, None)
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "failed to parse settings file; renaming to .bak and using defaults");
+                    let bak_name = format!(
+                        "{}.bak",
+                        path.file_name()
+                            .and_then(|f| f.to_str())
+                            .unwrap_or("settings.json")
+                    );
+                    let bak_path = path.with_file_name(&bak_name);
+                    let _ = std::fs::rename(path, &bak_path);
+                    let notice = format!(
+                        "Settings file could not be parsed and was backed up to {bak_name}. Defaults restored."
+                    );
+                    (Self::default(), Some(notice))
+                }
+            },
             Err(err) => {
                 tracing::warn!(%err, "failed to read settings file; using defaults");
-                Self::default()
+                (Self::default(), None)
             }
         }
     }
 
-    /// Save settings to disk in readable JSON format.
+    /// Save settings to disk in readable JSON format atomically.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -147,7 +189,24 @@ impl AppSettings {
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+
+        let temp_path = path.with_file_name(format!(
+            "{}.tmp.{}",
+            path.file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("settings"),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        std::fs::write(&temp_path, json)?;
+        if let Err(err) = std::fs::rename(&temp_path, path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(err);
+        }
+        Ok(())
     }
 }
 

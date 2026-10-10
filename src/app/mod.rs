@@ -193,7 +193,7 @@ impl State {
 
         let settings_path = crate::storage::default_settings_path()
             .unwrap_or_else(|_| PathBuf::from("settings.json"));
-        let mut app_settings = AppSettings::load_or_default(&settings_path);
+        let (mut app_settings, settings_notice) = AppSettings::load_with_notice(&settings_path);
         let autostart_enabled = platform::is_autostart_enabled().unwrap_or(false);
         app_settings.autostart = autostart_enabled;
 
@@ -221,7 +221,7 @@ impl State {
             selected_full_text: None,
             is_loading: true,
             confirm_clear: false,
-            status_feedback: None,
+            status_feedback: settings_notice.map(|msg| (msg, true)),
 
             app_settings,
             settings_path,

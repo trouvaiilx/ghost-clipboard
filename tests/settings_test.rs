@@ -46,12 +46,48 @@ fn test_settings_persistence_roundtrip() {
 fn test_settings_load_fallback_on_corrupted_file() {
     let temp = tempfile::tempdir().expect("create temp dir");
     let path = temp.path().join("broken_settings.json");
+    let bak_path = temp.path().join("broken_settings.json.bak");
 
     std::fs::write(&path, "{ invalid json content").expect("write invalid json");
 
-    // Must not crash, should fall back to default
-    let loaded = AppSettings::load_or_default(&path);
+    // Must not crash, should fall back to default, rename to .bak, and report notice
+    let (loaded, notice) = AppSettings::load_with_notice(&path);
     assert_eq!(loaded, AppSettings::default());
+    assert!(!path.exists(), "original corrupt file must be renamed");
+    assert!(bak_path.exists(), "backup .bak file must be created");
+    assert!(notice.is_some(), "a notice must be provided on corruption");
+    assert!(notice.unwrap().contains("broken_settings.json.bak"));
+}
+
+#[test]
+fn test_settings_serde_default_and_version_migration() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let path = temp.path().join("partial_settings.json");
+
+    // File from an older version without `version`, missing capture, retention, hotkey, close_on_blur,
+    // and having only a custom user exclusion.
+    let partial_json = r#"{
+        "excluded_apps": ["custom_secret_app.exe"]
+    }"#;
+    std::fs::write(&path, partial_json).expect("write partial json");
+
+    let loaded = AppSettings::load_or_default(&path);
+
+    // Custom app should be retained
+    assert!(
+        loaded
+            .excluded_apps
+            .iter()
+            .any(|a| a == "custom_secret_app.exe")
+    );
+    // New defaults should have been merged during version bump
+    assert!(loaded.excluded_apps.iter().any(|a| a == "nordpass.exe"));
+    assert!(loaded.excluded_apps.iter().any(|a| a == "roboform.exe"));
+    assert_eq!(loaded.version, 1);
+    // Missing fields take their defaults rather than causing serde failure
+    assert_eq!(loaded.hotkey, "Ctrl+Shift+Space");
+    assert!(loaded.close_on_blur);
+    assert_eq!(loaded.capture.max_entry_bytes, 1024 * 1024);
 }
 
 #[tokio::test]
