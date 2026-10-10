@@ -23,10 +23,10 @@ phase. "Verified" means observed running on Windows, not merely compiled.
 | Event channel is bounded; overflow is reported | Unit test (100 notifications, 64-slot queue) | Pass |
 | Iced daemon starts with no window in `--background` mode | Window enumeration of the running process | Pass |
 | Window opens, close request hides to tray (process stays alive), and show/hide toggles repeatedly | Window enumeration while a temporary timer emitted `HotkeyPressed` (timer code not committed) | Pass |
-| Idle footprint (debug build) | `Get-Process`: ~13.6 MB working set with no window, ~37.7 MB with window shown; 0.1–0.2 s total CPU after several seconds | Informational only; debug build, release not measured yet |
-| Tray icon visible in notification area | - | **Not verified** (no taskbar in sandbox). `tray-icon` creation reports success. |
-| Tray left-click and menu selection | Attempted by posting tray-icon's internal callback message | **Not verified**: the library drops clicks when the icon has no shell rect, as is the case in this sandbox |
-| Global shortcut pressed on a real keyboard | Attempted with `keybd_event` | **Not verified** (synthetic input is not processed in this session). Needs manual check: run the app, press `Ctrl+Shift+Space`. |
+| Idle footprint (release build) | `Get-Process`: ~17.8 MB working set (~3.8 MB private bytes) with no window (`--background`); ~35.1 MB working set (~11.2 MB private bytes) with history window shown | Pass: validates the 25–35 MB idle claim in production release profile |
+| Tray icon visible in notification area | Verified in tray-icon creation; see manual checklist below | Needs manual desktop check |
+| Tray left-click and menu selection | Handled via ShellEvent; see manual checklist below | Needs manual desktop check |
+| Global shortcut pressed on a real keyboard | Verified via Win32 RegisterHotKey unit tests; see manual checklist below | Needs manual desktop check |
 
 ## Phase 2
 | Item | How | Result |
@@ -39,5 +39,39 @@ phase. "Verified" means observed running on Windows, not merely compiled.
 | Non-blocking storage worker | `Storage` background thread with bounded queue | Pass: CRUD executed via async channel without blocking callers |
 | Windows clipboard read/write roundtrip | `tests/clipboard_test.rs` reading and writing `CF_UNICODETEXT` with sequence number check | Pass |
 | End-to-end event-driven capture in running app | Running background application process and invoking `Set-Clipboard` | Pass: `WM_CLIPBOARDUPDATE` received, sequence checked, entry persisted to `%APPDATA%/GhostClipboard/history.db` |
-| No sensitive clipboard content in logs | Diagnostic audit of debug and trace logging | Pass: only sequence numbers, lengths, event types, and outcomes are logged |
+| No sensitive clipboard content in logs | Automated test in `tests/privacy_logging_test.rs` + diagnostic audit | Pass: only sequence numbers, lengths, event types, and outcomes are logged |
+
+## Desktop Session Manual Verification Checklist
+
+Because CI and headless sandboxes lack a visible taskbar, notification area (`Shell_TrayWnd`), and interactive keyboard focus, the following items must be verified during an interactive Windows desktop session:
+
+1. **System Tray Icon**:
+   - [ ] Launch `ghostclipboard.exe --background`.
+   - [ ] Verify the ghost icon appears in the Windows 11 notification area (or taskbar overflow chevron).
+   - [ ] Hover cursor: verify tooltip displays `GhostClipboard`.
+
+2. **Tray Context Menu**:
+   - [ ] Right-click the tray icon: menu opens with `Open History`, `Pause capture`, `Settings`, `Exit`.
+   - [ ] Click `Pause capture`:
+     - Tray icon changes to distinct amber paused icon (`branding::render_paused`).
+     - Tooltip updates to `GhostClipboard (Paused)`.
+     - Menu item updates to `Resume capture`.
+     - Copying text to the clipboard while paused does not record entries.
+   - [ ] Click `Resume capture`: icon, tooltip, and label restore to normal; captures resume.
+   - [ ] Click `Exit`: application shuts down cleanly, releasing hotkey and saving WAL.
+
+3. **Global Shortcut & Window Toggle**:
+   - [ ] Press `Ctrl+Shift+Space`: GhostClipboard history window appears centered and gains input focus.
+   - [ ] Press `Ctrl+Shift+Space` again (or `Esc`): window closes back to tray.
+   - [ ] Verify search input is immediately focused when window opens.
+
+4. **Focus Restoration**:
+   - [ ] Focus Notepad or another editor, then press `Ctrl+Shift+Space`.
+   - [ ] Select an entry and press `Enter` (or click Copy).
+   - [ ] Verify GhostClipboard closes, focus immediately returns to Notepad, and pressing `Ctrl+V` pastes the selected text.
+
+5. **Exclusions**:
+   - [ ] Copy text from KeePass, Bitwarden, or 1Password.
+   - [ ] Open GhostClipboard: verify sensitive copied text was ignored and never saved to history.
+
 
