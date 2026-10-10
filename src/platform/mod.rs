@@ -117,14 +117,15 @@ pub fn active_window_handle() -> Option<isize> {
 }
 
 /// Restore foreground focus to the previously active application window.
-pub fn restore_active_window(handle: isize) {
+pub fn restore_active_window(handle: isize) -> bool {
     #[cfg(windows)]
     {
-        windows::foreground::restore_active_window(handle);
+        windows::foreground::restore_active_window(handle)
     }
     #[cfg(not(windows))]
     {
         let _ = handle;
+        false
     }
 }
 

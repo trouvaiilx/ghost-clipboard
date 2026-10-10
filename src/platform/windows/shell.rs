@@ -34,17 +34,20 @@ use windows::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
     UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HWND_MESSAGE,
-    MSG, PostMessageW, PostQuitMessage, RegisterClassExW, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_APP, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_HOTKEY, WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EVENT_SYSTEM_FOREGROUND,
+    GetMessageW, HWND_MESSAGE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_APP,
+    WM_CLIPBOARDUPDATE, WM_DESTROY, WM_HOTKEY, WNDCLASSEXW,
 };
 use windows::core::w;
 
+use super::foreground;
 use crate::branding;
 use crate::platform::{Component, Hotkey, ShellEvent, ShellFault, TrayCommand};
 
@@ -220,6 +223,20 @@ fn deliver(tx: &mpsc::Sender<ShellEvent>, event: ShellEvent) {
     }
 }
 
+unsafe extern "system" fn win_event_proc(
+    _hhook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _idobject: i32,
+    _idchild: i32,
+    _ideventthread: u32,
+    _dwmseventtime: u32,
+) {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        foreground::update_last_external_foreground(hwnd);
+    }
+}
+
 fn run(config: ShellConfig, events: mpsc::Sender<ShellEvent>, ready: std_mpsc::SyncSender<Ready>) {
     SINK.with(|sink| *sink.borrow_mut() = Some(events.clone()));
 
@@ -264,9 +281,27 @@ fn run(config: ShellConfig, events: mpsc::Sender<ShellEvent>, ready: std_mpsc::S
         }
     }
 
+    let win_event_hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+
     let _ = ready.send(Ok((hwnd.0 as isize, StartupReport { faults })));
 
     message_loop();
+
+    if !win_event_hook.0.is_null() {
+        unsafe {
+            let _ = UnhookWinEvent(win_event_hook);
+        }
+    }
 
     // Orderly teardown on the owning thread. The shell window (and with it the
     // clipboard listener and hotkey) was already released in WM_DESTROY.
@@ -605,7 +640,20 @@ mod tests {
         while events.try_recv().is_ok() {}
 
         post(&shell, WM_HOTKEY, HOTKEY_ID as usize);
-        assert_eq!(next_event(&mut events), ShellEvent::HotkeyPressed);
+        // External clipboard updates may fire concurrently from other tests; wait for the hotkey event
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut got_hotkey = false;
+        while Instant::now() < deadline {
+            match events.try_recv() {
+                Ok(ShellEvent::HotkeyPressed) => {
+                    got_hotkey = true;
+                    break;
+                }
+                Ok(ShellEvent::ClipboardChanged) => continue,
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        assert!(got_hotkey, "expected HotkeyPressed event");
 
         post(&shell, WM_CLIPBOARDUPDATE, 0);
         assert_eq!(next_event(&mut events), ShellEvent::ClipboardChanged);

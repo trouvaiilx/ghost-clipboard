@@ -5,41 +5,119 @@
 //! saves/restores active window focus across history display.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    BringWindowToTop, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
+    SetForegroundWindow,
 };
 use windows::core::PWSTR;
 
+static LAST_EXTERNAL_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
+
+/// Check whether `hwnd` belongs to the Windows shell or taskbar.
+pub fn is_shell_or_taskbar(hwnd: HWND) -> bool {
+    let mut class_name = [0u16; 64];
+    let len = unsafe { GetClassNameW(hwnd, &mut class_name) };
+    if len > 0 {
+        let name = String::from_utf16_lossy(&class_name[..len as usize]);
+        matches!(
+            name.as_str(),
+            "Shell_TrayWnd"
+                | "Shell_SecondaryTrayWnd"
+                | "NotifyIconOverflowWindow"
+                | "Progman"
+                | "WorkerW"
+        )
+    } else {
+        false
+    }
+}
+
+/// Update the tracked last external foreground window.
+pub fn update_last_external_foreground(hwnd: HWND) {
+    if hwnd.is_invalid() || hwnd.0.is_null() {
+        return;
+    }
+    let mut pid: u32 = 0;
+    let _ = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    if !is_shell_or_taskbar(hwnd) && unsafe { IsWindow(Some(hwnd)).as_bool() } {
+        LAST_EXTERNAL_FOREGROUND.store(hwnd.0 as isize, Ordering::SeqCst);
+    }
+}
+
 /// Get the handle of the currently active foreground window as an isize integer.
 /// Returns None if the foreground window is invalid or belongs to our process.
+/// If current foreground is taskbar or invalid, falls back to the last tracked external foreground window.
 pub fn active_window_handle() -> Option<isize> {
     unsafe {
-        let hwnd: HWND = GetForegroundWindow();
-        if hwnd.is_invalid() || hwnd.0.is_null() {
-            return None;
+        let fg: HWND = GetForegroundWindow();
+        if !fg.is_invalid() && !fg.0.is_null() {
+            let mut pid: u32 = 0;
+            let _ = GetWindowThreadProcessId(fg, Some(&mut pid));
+            if pid != 0
+                && pid != std::process::id()
+                && !is_shell_or_taskbar(fg)
+                && IsWindow(Some(fg)).as_bool()
+            {
+                LAST_EXTERNAL_FOREGROUND.store(fg.0 as isize, Ordering::SeqCst);
+                return Some(fg.0 as isize);
+            }
         }
 
-        let mut pid: u32 = 0;
-        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 || pid == std::process::id() {
-            return None;
+        // Fall back to tracked last external foreground window
+        let last = LAST_EXTERNAL_FOREGROUND.load(Ordering::SeqCst);
+        if last != 0 {
+            let hwnd = HWND(last as *mut _);
+            if IsWindow(Some(hwnd)).as_bool() {
+                return Some(last);
+            }
         }
 
-        Some(hwnd.0 as isize)
+        None
     }
 }
 
 /// Restore focus to a previously active window.
-pub fn restore_active_window(handle: isize) {
-    if handle != 0 {
-        unsafe {
-            let hwnd = HWND(handle as *mut _);
-            let _ = SetForegroundWindow(hwnd);
+///
+/// Validates with `IsWindow`, checks `SetForegroundWindow`'s return value,
+/// and applies thread input attachment as a fallback.
+pub fn restore_active_window(handle: isize) -> bool {
+    if handle == 0 {
+        return false;
+    }
+    unsafe {
+        let hwnd = HWND(handle as *mut _);
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return false;
         }
+
+        if SetForegroundWindow(hwnd).as_bool() {
+            return true;
+        }
+
+        // Fallback: attach thread input to bypass Windows focus restrictions
+        let current_thread = GetCurrentThreadId();
+        let target_thread = GetWindowThreadProcessId(hwnd, None);
+
+        if current_thread != target_thread && target_thread != 0 {
+            let _ = AttachThreadInput(current_thread, target_thread, true);
+            let success = SetForegroundWindow(hwnd).as_bool();
+            let _ = BringWindowToTop(hwnd);
+            let _ = AttachThreadInput(current_thread, target_thread, false);
+            if success {
+                return true;
+            }
+        }
+
+        BringWindowToTop(hwnd).is_ok()
     }
 }
 
@@ -119,5 +197,28 @@ pub fn source_process_name() -> Option<String> {
 
         let fg: HWND = GetForegroundWindow();
         process_name_for_hwnd(fg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_restore_active_window_null_or_invalid() {
+        assert!(!restore_active_window(0));
+        assert!(!restore_active_window(-1));
+        assert!(!restore_active_window(999_999_999));
+    }
+
+    #[test]
+    fn test_is_shell_or_taskbar_null() {
+        assert!(!is_shell_or_taskbar(HWND(std::ptr::null_mut())));
+    }
+
+    #[test]
+    fn test_update_last_external_foreground_null() {
+        update_last_external_foreground(HWND(std::ptr::null_mut()));
+        // Null HWND should not panic and should not set an invalid pointer
     }
 }
